@@ -278,6 +278,8 @@ section .data
 section .bss
     sockfd         resd 1
     sockaddr       resb 16
+    addrinfo_hints resb 48     ; sizeof(struct addrinfo)
+    addrinfo_res   resq 1      ; pointer to result
     receive_buffer resb RECEIVE_BUFFER_SIZE
     frame_buffer   resb FRAME_BUFFER_SIZE
     input_buffer   resb INPUT_BUFFER_SIZE
@@ -296,7 +298,8 @@ section .bss
 
 section .text
     global _start
-    extern gethostbyname
+    extern getaddrinfo
+    extern freeaddrinfo
 
 
 _start:
@@ -417,55 +420,75 @@ setup_queue_and_bind:
     ret
 
 resolve_and_connect:
+    ; Setup addrinfo hints
+    mov rdi, addrinfo_hints
+    mov rcx, 48
+    xor rax, rax
+    rep stosb               ; zero out hints structure
+    
+    ; Set hints: ai_family = AF_UNSPEC (0), ai_socktype = SOCK_STREAM (1)
+    mov dword [addrinfo_hints + 8], 1   ; ai_socktype = SOCK_STREAM (offset 8)
+    
     ; Align stack for C call
     push rbp
     mov rbp, rsp
     and rsp, -16
-
-    mov rdi, host_str
-    call gethostbyname
-
+    
+    ; Use runtime_host if set, otherwise use default host_str
+    mov rdi, runtime_host
+    cmp byte [rdi], 0       ; check if runtime_host is empty
+    jne .use_runtime_host
+    mov rdi, host_str       ; use default if runtime_host is empty
+.use_runtime_host:
+    
+    ; Call getaddrinfo(hostname, NULL, &hints, &result)
+    xor rsi, rsi                ; service (NULL)
+    lea rdx, [addrinfo_hints]   ; hints
+    lea rcx, [addrinfo_res]     ; result pointer
+    call getaddrinfo
+    
     mov rsp, rbp
     pop rbp
-
+    
     test rax, rax
+    jnz dns_fail_handler        ; getaddrinfo returns 0 on success
+    
+    ; Get the first addrinfo result
+    mov rsi, [addrinfo_res]
+    test rsi, rsi
     jz dns_fail_handler
-
-    ; Extract IP from hostent structure
-    mov rsi, rax
-    mov rdi, [rsi + 24]     ; h_addr_list
-    test rdi, rdi
-    jz dns_fail_handler
-    mov rdi, [rdi]          ; first address
-    test rdi, rdi
-    jz dns_fail_handler
-
-    ; Setup sockaddr_in
-    mov word [sockaddr], 2          ; AF_INET (little endian on x86)
-    mov ax, [port_be]
-    mov [sockaddr + 2], ax          ; port (big endian)
-    mov eax, [rdi]                  ; IP (already network order)
-    mov [sockaddr + 4], eax
-    mov qword [sockaddr + 8], 0     ; zero padding
-
-    ; Create socket
+    
+    ; Create socket using address family from result
     mov rax, 41                     ; sys_socket
-    mov rdi, 2                      ; AF_INET
+    mov edi, [rsi + 4]              ; ai_family from addrinfo (offset 4)
     mov rsi, 1                      ; SOCK_STREAM
     mov rdx, 0                      ; protocol
     syscall
-
+    
     test rax, rax
     js socket_fail_handler
     mov [sockfd], eax
-
-    ; Connect
+    
+    ; Connect using sockaddr from addrinfo result
     mov rax, 42                     ; sys_connect
     mov rdi, [sockfd]
-    lea rsi, [sockaddr]
-    mov rdx, 16
+    mov rsi, [addrinfo_res]
+    mov rsi, [rsi + 24]             ; ai_addr from addrinfo (offset 24)
+    mov rdx, [addrinfo_res]
+    mov edx, [rdx + 16]             ; ai_addrlen from addrinfo (offset 16)
     syscall
-
+    
+    ; Free addrinfo result
+    push rax                        ; save connect result
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    mov rdi, [addrinfo_res]
+    call freeaddrinfo
+    mov rsp, rbp
+    pop rbp
+    pop rax                         ; restore connect result
+    
     test rax, rax
     js connect_fail_handler
     ret
