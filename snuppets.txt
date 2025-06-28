@@ -1,0 +1,58 @@
+    ; Trace handshake
+    mov rdi, trace_handshake
+    call print_string
+    ; Perform AMQP handshake
+    call amqp_handshake
+    ; Tracing messages
+    trace_conn     db "[TRACE] Connecting to broker...", 10, 0
+    trace_handshake db "[TRACE] Starting AMQP handshake...", 10, 0
+    trace_start    db "[TRACE] Received Connection.Start", 10, 0
+    trace_start_ok db "[TRACE] Sending Connection.StartOk", 10, 0
+    trace_tune     db "[TRACE] Received Connection.Tune", 10, 0
+    trace_tune_ok  db "[TRACE] Sending Connection.TuneOk", 10, 0
+    trace_open     db "[TRACE] Sending Connection.Open", 10, 0
+    trace_open_ok  db "[TRACE] Received Connection.OpenOk", 10, 0
+    trace_ch_open  db "[TRACE] Sending Channel.Open", 10, 0
+    trace_ch_ok    db "[TRACE] Received Channel.OpenOk", 10, 0
+    trace_ex_decl  db "[TRACE] Declaring exchange: ", 0
+    trace_ex_ok    db "[TRACE] Exchange declared successfully", 10, 0
+    trace_q_decl   db "[TRACE] Declaring queue...", 10, 0
+    trace_q_ok     db "[TRACE] Queue declared: ", 0
+    trace_bind     db "[TRACE] Binding queue to exchange with routing key: ", 0
+    trace_bind_ok  db "[TRACE] Queue bound successfully", 10, 0
+    trace_pub      db "[TRACE] Publishing message...", 10, 0
+    trace_pub_ok   db "[TRACE] Message published successfully", 10, 0
+    trace_consume  db "[TRACE] Starting consumer...", 10, 0
+    trace_cons_ok  db "[TRACE] Consumer started, waiting for messages...", 10, 0
+    trace_deliver  db "[TRACE] Received Basic.Deliver", 10, 0
+    trace_frame    db "[TRACE] Frame - Type: ", 0
+    trace_channel  db ", Channel: ", 0
+    trace_size     db ", Size: ", 0
+    trace_method   db "[TRACE] Method ID: 0x", 0
+    trace_hex_buf  resb 16
+
+please check that the whole workflow is implemented:
+
+AMQP Producer:
+
+Connect to broker
+
+Create channel
+
+Declare exchange (topic type)
+
+Publish message to exchange with routing key
+
+AMQP Consumer:
+
+Connect to broker
+
+Create channel
+
+Declare exchange (topic type)
+
+Declare queue
+
+Bind queue to exchange with routing key
+
+Consume messages from queue

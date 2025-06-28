@@ -1,0 +1,5 @@
+apiVersion: v2
+name: amqp-nasm-lib
+description: A Helm library chart for AMQP Assembly components
+type: library
+version: 0.1.0
