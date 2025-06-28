@@ -38,7 +38,7 @@ bash deploy.sh
 If you'd rather see some output printed to your console, just start Docker Compose:
 
 ```bash
-docker compose up
+docker compose up --build
 ```
 
 ---
