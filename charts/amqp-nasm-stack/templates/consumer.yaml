@@ -1,0 +1,13 @@
+{{- if .Values.consumer.enabled }}
+{{- $context := . }}
+{{- $consumerValues := dict }}
+{{- $_ := set $consumerValues "global" .Values.global }}
+{{- $_ := set $consumerValues "component" "consumer" }}
+{{- $_ := set $consumerValues "image" .Values.consumer.image }}
+{{- $_ := set $consumerValues "replicaCount" .Values.consumer.replicaCount }}
+{{- if .Values.consumer.amqp }}
+{{- $_ := set $consumerValues "amqp" .Values.consumer.amqp }}
+{{- end }}
+{{- $newContext := dict "Values" $consumerValues "Chart" .Chart "Release" .Release }}
+{{- include "amqp-nasm-lib.deployment" $newContext }}
+{{- end }}

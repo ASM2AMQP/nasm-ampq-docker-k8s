@@ -1,0 +1,13 @@
+{{- if .Values.producer.enabled }}
+{{- $context := . }}
+{{- $producerValues := dict }}
+{{- $_ := set $producerValues "global" .Values.global }}
+{{- $_ := set $producerValues "component" "producer" }}
+{{- $_ := set $producerValues "image" .Values.producer.image }}
+{{- $_ := set $producerValues "replicaCount" .Values.producer.replicaCount }}
+{{- if .Values.producer.amqp }}
+{{- $_ := set $producerValues "amqp" .Values.producer.amqp }}
+{{- end }}
+{{- $newContext := dict "Values" $producerValues "Chart" .Chart "Release" .Release }}
+{{- include "amqp-nasm-lib.deployment" $newContext }}
+{{- end }}

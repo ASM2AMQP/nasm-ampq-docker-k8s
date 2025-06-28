@@ -1,0 +1,48 @@
+FROM alpine:latest
+
+# Add user and prepare directories
+RUN adduser -D appuser \
+ && mkdir -p /app \
+ && chown -R appuser:appuser /app
+
+# Install build and runtime dependencies
+RUN apk add --no-cache nasm binutils musl-dev musl netcat-openbsd
+
+ARG USERNAME
+ARG PASSWORD
+ARG EXCHANGE
+ARG ROUTINGKEY
+ARG QUEUENAME
+ARG VHOST
+ARG HOST
+ARG PORT
+
+WORKDIR /app
+
+# Copy source files
+COPY amqp.asm .
+COPY start_amqp.sh .
+RUN chmod +x start_amqp.sh
+
+# Set environment variables
+ENV USERNAME=${USERNAME} \
+    PASSWORD=${PASSWORD} \
+    EXCHANGE=${EXCHANGE} \
+    ROUTINGKEY=${ROUTINGKEY} \
+    QUEUENAME=${QUEUENAME} \
+    VHOST=${VHOST} \
+    HOST=${HOST} \
+    PORT=${PORT}
+
+# Compile ASM to binary
+RUN nasm \
+   -DUSERNAME='"'"${USERNAME}"'"' \
+   -DPASSWORD='"'"${PASSWORD}"'"' \
+   -DEXCHANGE='"'"${EXCHANGE}"'"' \
+   -DROUTINGKEY='"'"${ROUTINGKEY}"'"' \
+   -DQUEUENAME='"'"${QUEUENAME}"'"' \
+   -DVHOST='"'"${VHOST}"'"' \
+   -DHOST='"'"${HOST}"'"' \
+   -DPORT="${PORT}" \
+   -f elf64 -o amqp.o amqp.asm \
+ && ld -dynamic-linker /lib/ld-musl-x86_64.so.1 -lc amqp.o -o amqp

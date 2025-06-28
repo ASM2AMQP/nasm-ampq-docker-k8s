@@ -1,0 +1,44 @@
+# Global AMQP configuration
+global:
+  amqp:
+    username: guest
+    password: guest
+    exchange: datetime_exchange
+    routingKey: datetime.last
+    queueName: datetime_queue
+    vhost: /
+    host: amqp-nasm-stack-rabbitmq
+    port: 5672
+
+# RabbitMQ configuration
+rabbitmq:
+  auth:
+    username: guest
+    password: guest
+  service:
+    type: ClusterIP
+    ports:
+      amqp: 5672
+      amqpTls: 5671
+      dist: 25672
+      manager: 15672
+      epmd: 4369
+      metrics: 9419
+
+# Producer configuration
+producer:
+  enabled: true
+  image:
+    repository: docker.io/library/amqp-nasm
+    tag: latest
+    pullPolicy: Never
+  replicaCount: 1
+
+# Consumer configuration  
+consumer:
+  enabled: true
+  image:
+    repository: docker.io/library/amqp-nasm
+    tag: latest
+    pullPolicy: Never
+  replicaCount: 1

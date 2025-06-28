@@ -1,0 +1,16 @@
+# Default values for amqp-nasm-lib
+image:
+  repository: docker.io/library/amqp-nasm
+  tag: latest
+
+# Global AMQP configuration
+global:
+  amqp:
+    username: guest
+    password: guest
+    exchange: datetime_exchange
+    routingKey: datetime.last
+    queueName: datetime_queue
+    vhost: /
+    host: rabbitmq
+    port: 5672

@@ -1,0 +1,37 @@
+#docker-compose.yml
+
+name: amqp_asm_yolo
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:5555:15672"
+    expose:
+      - "5672"
+
+  consumer: &consumer
+    depends_on:
+      - rabbitmq
+    build:
+      context: .
+      target: final
+      args:
+        USERNAME: ${CONTAINER_ENV_USERNAME:-guest}
+        PASSWORD: ${CONTAINER_ENV_PASSWORD:-guest}
+        EXCHANGE: ${CONTAINER_ENV_EXCHANGE:-datetime_exchange}
+        ROUTINGKEY: ${CONTAINER_ENV_ROUTINGKEY:-datetime.last}
+        QUEUENAME: ${CONTAINER_ENV_QUEUENAME:-datetime_queue}
+        VHOST: ${CONTAINER_ENV_VHOST:-/}
+        HOST: ${CONTAINER_ENV_HOST:-rabbitmq}
+        PORT: ${CONTAINER_ENV_PORT:-5672}
+    environment:
+        HOST: ${CONTAINER_ENV_HOST:-rabbitmq}
+        PORT: ${CONTAINER_ENV_PORT:-5672}
+    command: /app/start_amqp.sh consumer
+
+  producer:
+    <<: *consumer
+    command: /app/start_amqp.sh producer
+
