@@ -14,7 +14,7 @@ So long story short: this project was born as proof that low-level messaging int
 
 ## What's Inside
 
-- The producer and consumer implemented in **[assembly](./amqp.asm)** communicating via AMQP,
+- The producer and consumer **[./amqp.asm](./amqp.asm)** communicate via AMQP messages,
 - Docker Compose or Kubernetes (in the k3s incarnation) to orchestrate everything easily.
 
 ## How to Run
