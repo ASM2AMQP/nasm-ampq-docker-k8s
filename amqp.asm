@@ -695,14 +695,14 @@ read_password_from_stdin:
     mov rdi, password_prompt
     call print_string_to_stderr
     
-    ; Get current terminal attributes
+    ; Check if stdin is a terminal (optional - try termios first)
     mov rax, 16           ; sys_ioctl
     mov rdi, 0            ; stdin
     mov rsi, 0x5401       ; TCGETS
     lea rdx, [termios_orig]
     syscall
     test rax, rax
-    js termios_error
+    js password_no_termios ; If not a terminal, skip termios
     
     ; Copy to new termios
     mov rsi, termios_orig
@@ -720,8 +720,9 @@ read_password_from_stdin:
     lea rdx, [termios_new]
     syscall
     test rax, rax
-    js termios_error
+    js password_no_termios ; If setting fails, continue without echo control
     
+password_no_termios:
     ; Read password
     mov rax, 0            ; sys_read
     mov rdi, 0            ; stdin
@@ -745,7 +746,7 @@ password_no_newline:
     mov [runtime_password_len], eax
     
 password_restore_terminal:
-    ; Restore original terminal attributes
+    ; Try to restore original terminal attributes (ignore errors)
     mov rax, 16           ; sys_ioctl
     mov rdi, 0            ; stdin
     mov rsi, 0x5402       ; TCSETS
@@ -762,13 +763,8 @@ password_restore_terminal:
     pop rax
     ret
 
-termios_error:
-    mov rdi, error_termios_fail
-    call print_string_to_stderr
-    jmp exit_error
-
 password_read_error:
-    ; Restore terminal first
+    ; Try to restore terminal first (ignore errors)
     mov rax, 16           ; sys_ioctl
     mov rdi, 0            ; stdin
     mov rsi, 0x5402       ; TCSETS
@@ -879,7 +875,7 @@ resolve_and_connect:
     mov rbp, rsp
     and rsp, -16
 
-    mov rdi, host_str
+    mov rdi, runtime_hostname
     call gethostbyname
 
     mov rsp, rbp
@@ -899,7 +895,9 @@ resolve_and_connect:
 
     ; Setup sockaddr_in
     mov word [sockaddr], 2          ; AF_INET (little endian on x86)
-    mov ax, [port_be]
+    ; Convert runtime_port to big endian
+    mov eax, [runtime_port]
+    xchg al, ah                     ; swap bytes for big endian
     mov [sockaddr + 2], ax          ; port (big endian)
     mov eax, [rdi]                  ; IP (already network order)
     mov [sockaddr + 4], eax
@@ -1272,30 +1270,223 @@ build_exchange_declare_frame:
     ret
 
 declare_queue:
-    mov rdi, queue_declare_frame
-    mov rdx, (queue_declare_payload_end - queue_declare_frame + 1)
+    call build_queue_declare_frame
+    mov rdi, frame_buffer
+    mov rdx, rax
     call send_frame
     call receive_frame
+    ret
+
+; Build Queue.Declare frame dynamically
+build_queue_declare_frame:
+    push rbx
+    push rcx
+    push rsi
+    push rdi
+    
+    mov rdi, frame_buffer
+    mov byte [rdi], 1               ; frame type
+    mov word [rdi + 1], 0x0100      ; channel 1
+    mov rbx, rdi
+    add rdi, 7
+    mov rcx, rdi
+    
+    mov word [rdi], 0x3200          ; class 50 (big endian)
+    mov word [rdi + 2], 0x0A00      ; method 10
+    mov word [rdi + 4], 0           ; reserved
+    add rdi, 6
+    
+    mov rax, [runtime_queuename_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_queuename
+    rep movsb
+    pop rcx
+    
+    mov byte [rdi], 0               ; flags
+    mov dword [rdi + 1], 0          ; arguments
+    add rdi, 5
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    push rdi
+    sub rdi, rcx
+    mov rax, rdi
+    mov [rbx + 3], ah
+    mov [rbx + 4], al
+    mov byte [rbx + 5], 0
+    mov byte [rbx + 6], 0
+    shr rax, 8
+    mov [rbx + 5], al
+    shr rax, 8
+    mov [rbx + 4], al
+    pop rdi
+    
+    sub rdi, rbx
+    mov rax, rdi
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rbx
     ret
 
 bind_queue:
-    mov rdi, queue_bind_frame
-    mov rdx, (queue_bind_payload_end - queue_bind_frame + 1)
+    call build_queue_bind_frame
+    mov rdi, frame_buffer
+    mov rdx, rax
     call send_frame
     call receive_frame
     ret
 
+; Build Queue.Bind frame dynamically
+build_queue_bind_frame:
+    push rbx
+    push rcx
+    push rsi
+    push rdi
+    
+    mov rdi, frame_buffer
+    mov byte [rdi], 1
+    mov word [rdi + 1], 0x0100
+    mov rbx, rdi
+    add rdi, 7
+    mov rcx, rdi
+    
+    mov word [rdi], 0x3200          ; class 50
+    mov word [rdi + 2], 0x1400      ; method 20
+    mov word [rdi + 4], 0           ; reserved
+    add rdi, 6
+    
+    ; Queue name
+    mov rax, [runtime_queuename_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_queuename
+    rep movsb
+    pop rcx
+    
+    ; Exchange name
+    mov rax, [runtime_exchange_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_exchange
+    rep movsb
+    pop rcx
+    
+    ; Routing key
+    mov rax, [runtime_routingkey_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_routingkey
+    rep movsb
+    pop rcx
+    
+    mov byte [rdi], 0               ; nowait
+    mov dword [rdi + 1], 0          ; arguments
+    add rdi, 5
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    push rdi
+    sub rdi, rcx
+    mov rax, rdi
+    mov [rbx + 3], ah
+    mov [rbx + 4], al
+    mov byte [rbx + 5], 0
+    mov byte [rbx + 6], 0
+    shr rax, 8
+    mov [rbx + 5], al
+    shr rax, 8
+    mov [rbx + 4], al
+    pop rdi
+    
+    sub rdi, rbx
+    mov rax, rdi
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rbx
+    ret
+
 start_consuming:
-    mov rdi, basic_consume_frame
-    mov rdx, (basic_consume_payload_end - basic_consume_frame + 1)
+    call build_basic_consume_frame
+    mov rdi, frame_buffer
+    mov rdx, rax
     call send_frame
-    call receive_frame
+    ret
+
+; Build Basic.Consume frame dynamically
+build_basic_consume_frame:
+    push rbx
+    push rcx
+    push rsi
+    push rdi
+    
+    mov rdi, frame_buffer
+    mov byte [rdi], 1
+    mov word [rdi + 1], 0x0100
+    mov rbx, rdi
+    add rdi, 7
+    mov rcx, rdi
+    
+    mov word [rdi], 0x3C00          ; class 60
+    mov word [rdi + 2], 0x1400      ; method 20
+    mov word [rdi + 4], 0           ; reserved
+    add rdi, 6
+    
+    mov rax, [runtime_queuename_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_queuename
+    rep movsb
+    pop rcx
+    
+    mov byte [rdi], 0               ; consumer tag
+    mov byte [rdi + 1], 0b00000010  ; flags: no_ack
+    mov dword [rdi + 2], 0          ; arguments
+    add rdi, 6
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    push rdi
+    sub rdi, rcx
+    mov rax, rdi
+    mov [rbx + 3], ah
+    mov [rbx + 4], al
+    mov byte [rbx + 5], 0
+    mov byte [rbx + 6], 0
+    shr rax, 8
+    mov [rbx + 5], al
+    shr rax, 8
+    mov [rbx + 4], al
+    pop rdi
+    
+    sub rdi, rbx
+    mov rax, rdi
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rbx
     ret
 
 publish_message:
     ; Send Basic.Publish method frame
-    mov rdi, basic_publish_frame
-    mov rdx, (basic_publish_payload_end - basic_publish_frame + 1)
+    call build_basic_publish_frame
+    mov rdi, frame_buffer
+    mov rdx, rax
     call send_frame
 
     ; Send content header
@@ -1303,6 +1494,71 @@ publish_message:
 
     ; Send content body
     call send_content_body
+    ret
+
+; Build Basic.Publish frame dynamically
+build_basic_publish_frame:
+    push rbx
+    push rcx
+    push rsi
+    push rdi
+    
+    mov rdi, frame_buffer
+    mov byte [rdi], 1
+    mov word [rdi + 1], 0x0100
+    mov rbx, rdi
+    add rdi, 7
+    mov rcx, rdi
+    
+    mov word [rdi], 0x3C00          ; class 60
+    mov word [rdi + 2], 0x2800      ; method 40
+    mov word [rdi + 4], 0           ; reserved
+    add rdi, 6
+    
+    ; Exchange name
+    mov rax, [runtime_exchange_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_exchange
+    rep movsb
+    pop rcx
+    
+    ; Routing key
+    mov rax, [runtime_routingkey_len]
+    mov [rdi], al
+    inc rdi
+    push rcx
+    mov rcx, rax
+    mov rsi, runtime_routingkey
+    rep movsb
+    pop rcx
+    
+    mov byte [rdi], 0               ; flags
+    mov byte [rdi + 1], 0xCE        ; frame end
+    add rdi, 2
+    
+    push rdi
+    sub rdi, rcx
+    mov rax, rdi
+    mov [rbx + 3], ah
+    mov [rbx + 4], al
+    mov byte [rbx + 5], 0
+    mov byte [rbx + 6], 0
+    shr rax, 8
+    mov [rbx + 5], al
+    shr rax, 8
+    mov [rbx + 4], al
+    pop rdi
+    
+    sub rdi, rbx
+    mov rax, rdi
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rbx
     ret
 
 send_content_header:
