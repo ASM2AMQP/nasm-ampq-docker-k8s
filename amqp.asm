@@ -298,145 +298,6 @@ section .text
     global _start
     extern gethostbyname
 
-; Parse runtime arguments: [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]
-; Uses global argc/argv access pattern from _start
-; Empty strings or missing args use compile-time defaults  
-parse_runtime_args:
-    push rbp
-    mov rbp, rsp
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    
-    ; Simple approach: use same pattern as _start for accessing arguments
-    ; argc is at original [rsp], argv at original [rsp + 8]
-    ; But we need to account for call + pushes
-    mov rax, [rbp + 48]  ; argc (6 pushes + rbp push + return address = 64 bytes back)
-    
-    ; Check argc - if <= 2, no runtime args  
-    cmp rax, 2
-    jle .done
-    
-    ; If argc >= 3, parse username (argv[2])
-    cmp rax, 3
-    jl .check_host
-    mov rbx, [rbp + 56]  ; argv base
-    mov rsi, [rbx + 16]  ; argv[2]
-    test rsi, rsi
-    jz .check_host
-    cmp byte [rsi], 0    ; check for empty string
-    je .check_host
-    
-    ; Copy username
-    mov rdi, runtime_username
-    mov rdx, USERNAME_MAX - 1
-    call safe_strcpy
-    
-.check_host:
-    ; If argc >= 4, parse host (argv[3])
-    cmp rax, 4
-    jl .done
-    mov rsi, [rbx + 24]  ; argv[3]
-    test rsi, rsi
-    jz .done
-    cmp byte [rsi], 0    ; check for empty string
-    je .done
-    
-    ; Copy host
-    mov rdi, runtime_host
-    mov rdx, HOSTNAME_MAX - 1
-    call safe_strcpy
-    
-.done:
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rbp
-    ret
-
-; Safe string copy with length limit
-; rdi = dest, rsi = src, rdx = max_len (excluding null terminator)
-safe_strcpy:
-    push rax
-    push rcx
-    
-    xor rcx, rcx
-.copy_loop:
-    cmp rcx, rdx
-    jge .add_null
-    mov al, [rsi + rcx]
-    test al, al
-    jz .add_null
-    mov [rdi + rcx], al
-    inc rcx
-    jmp .copy_loop
-    
-.add_null:
-    mov byte [rdi + rcx], 0
-    
-    pop rcx
-    pop rax
-    ret
-
-; Get effective username - returns runtime if set, otherwise compile-time default
-; Returns: rsi = string pointer, rdx = length  
-get_effective_username:
-    cmp byte [runtime_username], 0
-    je .use_default
-    mov rsi, runtime_username
-    mov rdi, runtime_username
-    call strlen
-    mov rdx, rax
-    ret
-.use_default:
-    mov rsi, username
-    mov rdx, username_len
-    ret
-
-; Get effective password - returns runtime if set, otherwise compile-time default
-; Returns: rsi = string pointer, rdx = length
-get_effective_password:
-    cmp byte [runtime_password], 0
-    je .use_default
-    mov rsi, runtime_password
-    mov rdi, runtime_password
-    call strlen
-    mov rdx, rax
-    ret
-.use_default:
-    mov rsi, password
-    mov rdx, password_len
-    ret
-
-; Get effective vhost - returns runtime if set, otherwise compile-time default
-; Returns: rsi = string pointer, rdx = length
-get_effective_vhost:
-    cmp byte [runtime_vhost], 0
-    je .use_default
-    mov rsi, runtime_vhost
-    mov rdi, runtime_vhost
-    call strlen
-    mov rdx, rax
-    ret
-.use_default:
-    mov rsi, vhost
-    mov rdx, vhost_len
-    ret
-
-; Get effective host - returns runtime if set, otherwise compile-time default
-; Returns: rsi = string pointer (null-terminated)
-get_effective_host:
-    cmp byte [runtime_host], 0
-    je .use_default
-    mov rsi, runtime_host
-    ret
-.use_default:
-    mov rsi, host_str
-    ret
 
 _start:
     ; Check arguments - at least mode required
@@ -444,9 +305,33 @@ _start:
     cmp rax, 2
     jl show_usage
     
-    ; Parse optional runtime arguments 
-    call parse_runtime_args
-
+    ; Simple runtime username parsing - if argc >= 3, use argv[2] as username
+    cmp rax, 3
+    jl .parse_mode
+    mov rsi, [rsp + 24]    ; argv[2]
+    test rsi, rsi
+    jz .parse_mode
+    cmp byte [rsi], 0      ; check for empty string
+    je .parse_mode
+    
+    ; Copy username to runtime buffer (simple copy)
+    mov rdi, runtime_username
+    mov rcx, USERNAME_MAX - 1
+.copy_loop:
+    test rcx, rcx
+    jz .copy_done
+    mov al, [rsi]
+    test al, al
+    jz .copy_done
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .copy_loop
+.copy_done:
+    mov byte [rdi], 0
+    
+.parse_mode:
     ; Parse mode
     mov rsi, [rsp + 16]
     cmp byte [rsi], '-'
@@ -537,8 +422,7 @@ resolve_and_connect:
     mov rbp, rsp
     and rsp, -16
 
-    call get_effective_host
-    mov rdi, rsi  ; rsi contains the effective host string
+    mov rdi, host_str
     call gethostbyname
 
     mov rsp, rbp
@@ -627,124 +511,43 @@ send_amqp_header:
 
 
 send_connection_start_ok:
-    ; Build dynamic Connection.StartOk frame with runtime username/password
-    push rbp
-    mov rbp, rsp
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
+    ; Check if runtime username is provided
+    cmp byte [runtime_username], 0
+    je .send_static
     
-    ; Get frame buffer
-    mov rbx, frame_buffer
+    ; Build dynamic frame with runtime credentials
+    ; Copy static frame to frame_buffer first
+    mov rsi, conn_start_ok_frame
+    mov rdi, frame_buffer
+    mov rcx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
+    rep movsb
     
-    ; Frame header
-    mov byte [rbx], 1           ; frame type (method)
-    mov word [rbx + 1], 0       ; channel 0 (big endian)
+    ; Patch username in the copied frame
+    ; Find position of username (after "PLAIN" + length field)
+    mov rdi, frame_buffer
+    add rdi, (sasl_start - conn_start_ok_frame + 1)  ; position after null byte before username
     
-    ; Start building payload at offset 7 (after frame header)
-    mov rdi, rbx
-    add rdi, 7
-    
-    ; Connection.StartOk method (class 10, method 11)
-    mov dword [rdi], 0x0B000A00  ; 0x000A000B in big endian
-    add rdi, 4
-    
-    ; Client properties (empty table)
-    mov dword [rdi], 0
-    add rdi, 4
-    
-    ; Mechanism "PLAIN"
-    mov byte [rdi], 5
-    inc rdi
-    mov dword [rdi], 0x494C5041    ; "PLAI" 
-    add rdi, 4
-    mov byte [rdi], 0x4E           ; "N"
-    inc rdi
-    
-    ; Get effective username and password
-    call get_effective_username    ; rsi = username, rdx = username_len
-    push rsi
-    push rdx
-    call get_effective_password    ; rsi = password, rdx = password_len
-    mov rcx, rdx                   ; password_len in rcx
-    pop rdx                        ; username_len in rdx  
-    pop rax                        ; username in rax
-    
-    ; Calculate SASL response length: username_len + 1 + password_len + 1
-    mov r8, rdx
-    add r8, rcx
-    add r8, 2
-    
-    ; Write SASL response length (big endian)
-    mov eax, r8d
-    bswap eax
-    mov [rdi], eax
-    add rdi, 4
-    
-    ; Write SASL response: null + username + null + password
-    mov byte [rdi], 0
-    inc rdi
-    
-    ; Copy username
-    mov r9, rax    ; username pointer
-    mov r10, rdx   ; username length
+    ; Copy runtime username
+    mov rsi, runtime_username
 .copy_username:
-    test r10, r10
-    jz .username_done
-    mov al, [r9]
-    mov [rdi], al
-    inc r9
-    inc rdi
-    dec r10
-    jmp .copy_username
-.username_done:
-    
-    ; Null separator
-    mov byte [rdi], 0
-    inc rdi
-    
-    ; Copy password
-    mov r10, rcx   ; password length
-.copy_password:
-    test r10, r10
-    jz .password_done
     mov al, [rsi]
+    test al, al
+    jz .send_dynamic
     mov [rdi], al
     inc rsi
     inc rdi
-    dec r10
-    jmp .copy_password
-.password_done:
+    jmp .copy_username
     
-    ; Calculate total payload length
-    mov rax, rdi
-    sub rax, rbx
-    sub rax, 7        ; subtract frame header length
-    
-    ; Write payload length in frame header (big endian)
-    bswap eax
-    mov [rbx + 3], eax
-    
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate total frame length
-    mov rdx, rdi
-    sub rdx, rbx
-    
-    ; Send frame
-    mov rdi, rbx
+.send_dynamic:
+    mov rdi, frame_buffer
+    mov rdx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
     call send_frame
+    ret
     
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rbp
+.send_static:
+    mov rdi, conn_start_ok_frame
+    mov rdx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
+    call send_frame
     ret
 
 send_connection_tune_ok:
