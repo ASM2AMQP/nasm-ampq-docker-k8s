@@ -73,19 +73,19 @@ section .data
     password_prompt      db "Password: ", 0
 
     ; Trace messages
-    trace_send       db "Message sent to exchange: ", EXCHANGE, 10, 0
-    trace_receive    db "Received from queue: ", 0
-    trace_listening  db "Listening on queue: ", QUEUENAME, 10, 0
-    trace_read_stdin db "Reading messages from stdin (Ctrl+D to end):", 10, 0
-    trace_conn        db "[TRACE] Connecting to broker...", 10, 0
-    trace_handshake   db "[TRACE] Starting AMQP handshake...", 10, 0
-    trace_channel     db "[TRACE] Opening channel...", 10, 0
-    trace_exchange    db "[TRACE] Declaring exchange...", 10, 0
-    trace_queue       db "[TRACE] Declaring queue...", 10, 0
-    trace_bind        db "[TRACE] Binding queue to exchange...", 10, 0
-    trace_publish     db "[TRACE] Publishing message...", 10, 0
-    trace_consume     db "[TRACE] Starting consumer...", 10, 0
-    trace_waiting     db "[TRACE] Waiting for messages...", 10, 0
+    trace_send_prefix    db "Message sent to exchange: ", 0
+    trace_receive        db "Received from queue: ", 0
+    trace_listening_prefix db "Listening on queue: ", 0
+    trace_read_stdin     db "Reading messages from stdin (Ctrl+D to end):", 10, 0
+    trace_conn           db "[TRACE] Connecting to broker...", 10, 0
+    trace_handshake      db "[TRACE] Starting AMQP handshake...", 10, 0
+    trace_channel        db "[TRACE] Opening channel...", 10, 0
+    trace_exchange       db "[TRACE] Declaring exchange...", 10, 0
+    trace_queue          db "[TRACE] Declaring queue...", 10, 0
+    trace_bind           db "[TRACE] Binding queue to exchange...", 10, 0
+    trace_publish        db "[TRACE] Publishing message...", 10, 0
+    trace_consume        db "[TRACE] Starting consumer...", 10, 0
+    trace_waiting        db "[TRACE] Waiting for messages...", 10, 0
     trace_connection_open     db "  [TRACE] Connection Open ...", 0
     trace_connection_open_ok     db " Ok", 10, 0
     trace_connection_start     db "  [TRACE] Connection Start ...", 0
@@ -635,6 +635,46 @@ strcpy_len_done:
     pop rcx
     ret
 
+; Print dynamic trace message for sent messages
+; Uses runtime_exchange
+print_trace_send:
+%ifndef TRACING
+    ret
+%endif
+    push rdi
+    
+    mov rdi, trace_send_prefix
+    call print_string_to_stderr
+    
+    mov rdi, runtime_exchange
+    call print_string_to_stderr
+    
+    mov rdi, newline
+    call print_string_to_stderr
+    
+    pop rdi
+    ret
+
+; Print dynamic trace message for listening
+; Uses runtime_queuename  
+print_trace_listening:
+%ifndef TRACING
+    ret
+%endif
+    push rdi
+    
+    mov rdi, trace_listening_prefix
+    call print_string_to_stderr
+    
+    mov rdi, runtime_queuename
+    call print_string_to_stderr
+    
+    mov rdi, newline
+    call print_string_to_stderr
+    
+    pop rdi
+    ret
+
 ; Parse port string to integer
 ; Input: RSI = string pointer
 ; Output: RAX = port number (0 if invalid)
@@ -813,8 +853,7 @@ send_loop:
 
     call publish_message
 
-    mov rdi, trace_send
-    call print_trace
+    call print_trace_send
 
     jmp send_loop
 
@@ -827,8 +866,7 @@ mode_receive:
     call print_trace
     call start_consuming
 
-    mov rdi, trace_listening
-    call print_trace
+    call print_trace_listening
 
     mov rdi, trace_waiting
     call print_trace
