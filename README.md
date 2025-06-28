@@ -1,4 +1,4 @@
-# AMQP Assembler Messaging Demo
+# AMQP <-> Assembler Messaging Container Demo
 
 ## Rationale
 
