@@ -347,30 +347,56 @@ check_optional_args_receive:
     call parse_optional_args
     jmp mode_receive
 
-; Initialize runtime configuration with compile-time defaults
+; Copy default string value to runtime buffer
+; Register contracts:
+; Input:
+;   RSI = source string (compile-time default)
+;   RDI = destination buffer  
+;   RCX = source length
+;   RDX = pointer to length storage location
+; Output: None (always succeeds for compile-time defaults)
+; Preserves: All input registers except advances RDI past copied data
+copy_default_string:
+    push rsi
+    push rdi
+    push rcx
+    
+    ; Copy string content
+    rep movsb
+    
+    ; Add null termination
+    mov byte [rdi], 0
+    
+    ; Store length
+    mov [rdx], ecx
+    
+    pop rcx
+    pop rdi  
+    pop rsi
+    ret
+
+; Initialize runtime configuration with compile-time defaults using layered approach
 init_runtime_config:
     push rsi
     push rdi
     push rcx
-    push rax
+    push rdx
     
     ; Copy username default
     mov rsi, username
     mov rdi, runtime_username
     mov rcx, username_len
-    rep movsb
-    mov byte [rdi], 0
-    mov dword [runtime_username_len], username_len
+    mov rdx, runtime_username_len
+    call copy_default_string
     
     ; Copy password default  
     mov rsi, password
     mov rdi, runtime_password
     mov rcx, password_len
-    rep movsb
-    mov byte [rdi], 0
-    mov dword [runtime_password_len], password_len
+    mov rdx, runtime_password_len
+    call copy_default_string
     
-    ; Copy hostname default
+    ; Copy hostname default (special case - null-terminated)
     mov rsi, host_str
     mov rdi, runtime_hostname
     call strcpy_with_len
@@ -380,182 +406,135 @@ init_runtime_config:
     mov rsi, vhost
     mov rdi, runtime_vhost
     mov rcx, vhost_len
-    rep movsb
-    mov byte [rdi], 0
-    mov dword [runtime_vhost_len], vhost_len
+    mov rdx, runtime_vhost_len
+    call copy_default_string
     
     ; Copy queue name default
     mov rsi, queue_name
     mov rdi, runtime_queuename
     mov rcx, queue_name_len
-    rep movsb
-    mov byte [rdi], 0
-    mov dword [runtime_queuename_len], queue_name_len
+    mov rdx, runtime_queuename_len
+    call copy_default_string
     
     ; Copy exchange default
     mov rsi, exchange
     mov rdi, runtime_exchange
     mov rcx, exchange_len
-    rep movsb
-    mov byte [rdi], 0
-    mov dword [runtime_exchange_len], exchange_len
+    mov rdx, runtime_exchange_len
+    call copy_default_string
     
     ; Copy routing key default
     mov rsi, routing_key
     mov rdi, runtime_routingkey
     mov rcx, routing_key_len
-    rep movsb
-    mov byte [rdi], 0
-    mov dword [runtime_routingkey_len], routing_key_len
+    mov rdx, runtime_routingkey_len
+    call copy_default_string
     
     ; Set port default
     mov dword [runtime_port], PORT
     
-    pop rax
+    pop rdx
     pop rcx
     pop rdi
     pop rsi
     ret
 
-; Parse optional arguments if provided
-; Arguments: argv in [rsp+16], [rsp+24], etc.
+; Parse optional arguments if provided using layered approach
+; Register contracts: Uses argc from stack, preserves all caller registers
 parse_optional_args:
     push rbx
     push rcx
     push rdx
     push rsi
     push rdi
+    push r8
+    push r9
     
-    mov rax, [rsp + 48]  ; argc (adjust for pushes)
-    cmp rax, 2
-    jle parse_done  ; Only mode provided, use defaults
+    mov rbx, [rsp + 64]  ; argc (adjust for pushes: 7*8 = 56 + 8 = 64)
     
-    ; Parse username (argv[2])
-    cmp rax, 3
-    jl parse_done
-    mov rsi, [rsp + 72]  ; argv[2] (adjust for pushes)
-    call check_empty_string
-    test rax, rax
-    jnz parse_hostname  ; Empty string, skip to next
-    
-    mov rsi, [rsp + 72]  ; argv[2]
+    ; Parse username (argv[2]) - special case: triggers password read
+    mov rcx, rbx
+    mov rdx, 3  ; required argc
+    mov rsi, [rsp + 80]  ; argv[2] (64 + 16 = 80)
     mov rdi, runtime_username
-    mov rdx, USERNAME_MAX - 1
-    call safe_strcpy
+    mov r8, USERNAME_MAX - 1
+    mov r9, runtime_username_len
+    call copy_argument_if_present
+    jc arg_too_long_error
     test rax, rax
-    jz arg_too_long_error
-    mov [runtime_username_len], eax
+    jz .parse_hostname
+    call read_password_from_stdin  ; Username provided, read password
     
-    ; Username provided, need to read password
-    call read_password_from_stdin
-    
-parse_hostname:
+.parse_hostname:
     ; Parse hostname (argv[3])
-    mov rax, [rsp + 48]  ; argc
-    cmp rax, 4
-    jl parse_done
-    mov rsi, [rsp + 80]  ; argv[3]
-    call check_empty_string
-    test rax, rax
-    jnz parse_port
-    
-    mov rsi, [rsp + 80]  ; argv[3]
+    mov rcx, rbx
+    mov rdx, 4
+    mov rsi, [rsp + 88]  ; argv[3]
     mov rdi, runtime_hostname
-    mov rdx, HOSTNAME_MAX - 1
-    call safe_strcpy
-    test rax, rax
-    jz arg_too_long_error
-    mov [runtime_hostname_len], eax
+    mov r8, HOSTNAME_MAX - 1
+    mov r9, runtime_hostname_len
+    call copy_argument_if_present
+    jc arg_too_long_error
     
-parse_port:
-    ; Parse port (argv[4])
-    mov rax, [rsp + 48]  ; argc
-    cmp rax, 5
-    jl parse_vhost
-    mov rsi, [rsp + 88]  ; argv[4]
-    call check_empty_string
-    test rax, rax
-    jnz parse_vhost
-    
-    mov rsi, [rsp + 88]  ; argv[4]
+.parse_port:
+    ; Parse port (argv[4]) - special case: needs integer parsing
+    cmp rbx, 5
+    jl .parse_vhost
+    mov rsi, [rsp + 96]  ; argv[4]
+    cmp byte [rsi], 0
+    je .parse_vhost  ; empty string, skip
     call parse_port_string
     test rax, rax
     jz invalid_port_error
     mov [runtime_port], eax
     
-parse_vhost:
+.parse_vhost:
     ; Parse vhost (argv[5])
-    mov rax, [rsp + 48]  ; argc
-    cmp rax, 6
-    jl parse_queuename
-    mov rsi, [rsp + 96]  ; argv[5]
-    call check_empty_string
-    test rax, rax
-    jnz parse_queuename
-    
-    mov rsi, [rsp + 96]  ; argv[5]
+    mov rcx, rbx
+    mov rdx, 6
+    mov rsi, [rsp + 104]  ; argv[5]
     mov rdi, runtime_vhost
-    mov rdx, VHOST_MAX - 1
-    call safe_strcpy
-    test rax, rax
-    jz arg_too_long_error
-    mov [runtime_vhost_len], eax
+    mov r8, VHOST_MAX - 1
+    mov r9, runtime_vhost_len
+    call copy_argument_if_present
+    jc arg_too_long_error
     
-parse_queuename:
+.parse_queuename:
     ; Parse queue name (argv[6])
-    mov rax, [rsp + 48]  ; argc
-    cmp rax, 7
-    jl parse_exchange
-    mov rsi, [rsp + 104]  ; argv[6]
-    call check_empty_string
-    test rax, rax
-    jnz parse_exchange
-    
-    mov rsi, [rsp + 104]  ; argv[6]
+    mov rcx, rbx
+    mov rdx, 7
+    mov rsi, [rsp + 112]  ; argv[6]
     mov rdi, runtime_queuename
-    mov rdx, QUEUENAME_MAX - 1
-    call safe_strcpy
-    test rax, rax
-    jz arg_too_long_error
-    mov [runtime_queuename_len], eax
+    mov r8, QUEUENAME_MAX - 1
+    mov r9, runtime_queuename_len
+    call copy_argument_if_present
+    jc arg_too_long_error
     
-parse_exchange:
+.parse_exchange:
     ; Parse exchange (argv[7])
-    mov rax, [rsp + 48]  ; argc
-    cmp rax, 8
-    jl parse_routingkey
-    mov rsi, [rsp + 112]  ; argv[7]
-    call check_empty_string
-    test rax, rax
-    jnz parse_routingkey
-    
-    mov rsi, [rsp + 112]  ; argv[7]
+    mov rcx, rbx
+    mov rdx, 8
+    mov rsi, [rsp + 120]  ; argv[7]
     mov rdi, runtime_exchange
-    mov rdx, EXCHANGE_MAX - 1
-    call safe_strcpy
-    test rax, rax
-    jz arg_too_long_error
-    mov [runtime_exchange_len], eax
+    mov r8, EXCHANGE_MAX - 1
+    mov r9, runtime_exchange_len
+    call copy_argument_if_present
+    jc arg_too_long_error
     
-parse_routingkey:
+.parse_routingkey:
     ; Parse routing key (argv[8])
-    mov rax, [rsp + 48]  ; argc
-    cmp rax, 9
-    jl parse_done
-    mov rsi, [rsp + 120]  ; argv[8]
-    call check_empty_string
-    test rax, rax
-    jnz parse_done
-    
-    mov rsi, [rsp + 120]  ; argv[8]
+    mov rcx, rbx
+    mov rdx, 9
+    mov rsi, [rsp + 128]  ; argv[8]
     mov rdi, runtime_routingkey
-    mov rdx, ROUTINGKEY_MAX - 1
-    call safe_strcpy
-    test rax, rax
-    jz arg_too_long_error
-    mov [runtime_routingkey_len], eax
+    mov r8, ROUTINGKEY_MAX - 1
+    mov r9, runtime_routingkey_len
+    call copy_argument_if_present
+    jc arg_too_long_error
     
-parse_done:
+.parse_done:
+    pop r9
+    pop r8
     pop rdi
     pop rsi
     pop rdx
@@ -564,6 +543,68 @@ parse_done:
     ret
 
 ; Helper functions for argument parsing
+
+; Copy argument from argv if present and not empty
+; Register contracts:
+; Input: 
+;   RCX = argc (current argument count)
+;   RDX = required argc for this argument  
+;   RSI = argv pointer for this argument
+;   RDI = destination buffer
+;   R8  = maximum buffer size (excluding null terminator)
+;   R9  = pointer to length storage location
+; Output:
+;   RAX = 1 if copied, 0 if skipped (empty or not present)
+;   CF  = 1 if error (argument too long), 0 if success
+; Preserves: RBX, preserves all inputs except may modify buffer contents
+copy_argument_if_present:
+    push rbx
+    push rcx
+    push rdx
+    
+    ; Check if argument is present
+    cmp rcx, rdx
+    jl .arg_not_present
+    
+    ; Check if argument is empty
+    cmp byte [rsi], 0
+    je .arg_empty
+    
+    ; Copy argument safely
+    push rdi
+    push r8
+    push r9
+    mov rdx, r8  ; max length for safe_strcpy
+    call safe_strcpy
+    pop r9
+    pop r8
+    pop rdi
+    
+    ; Check if copy was successful
+    test rax, rax
+    jz .arg_too_long
+    
+    ; Store length and indicate success
+    mov [r9], eax
+    mov rax, 1  ; copied successfully
+    clc         ; clear carry flag
+    jmp .done
+    
+.arg_not_present:
+.arg_empty:
+    xor rax, rax  ; not copied
+    clc           ; clear carry flag
+    jmp .done
+    
+.arg_too_long:
+    xor rax, rax  ; not copied
+    stc           ; set carry flag for error
+    
+.done:
+    pop rdx
+    pop rcx
+    pop rbx
+    ret
 
 ; Check if string is empty
 ; Input: RSI = string pointer
@@ -1003,6 +1044,146 @@ send_amqp_header:
     ret
 
 
+; Layered AMQP Frame Construction Abstractions
+; Following assembly code review criteria for composability and clear contracts
+
+; Initialize frame header and return pointers for payload construction
+; Register contracts:
+; Input:
+;   RDI = frame buffer
+;   RBX = frame type (1=method, 2=header, 3=body)
+;   RCX = channel number (0 for connection, 1 for channel)
+; Output: 
+;   RBX = frame start pointer
+;   RCX = payload start pointer  
+;   RDI = current write position (after header)
+; Preserves: No guarantees - caller must save needed registers
+init_frame_header:
+    mov rbx, rdi                    ; save frame start
+    
+    ; Frame type
+    mov [rdi], bl                   ; frame type (low byte of input RBX)
+    inc rdi
+    
+    ; Channel (big endian)
+    mov [rdi], ch                   ; high byte
+    mov [rdi + 1], cl               ; low byte  
+    add rdi, 2
+    
+    ; Skip payload size (will be filled later) + reserved byte
+    add rdi, 4
+    
+    mov rcx, rdi                    ; save payload start
+    ret
+
+; Finalize frame by calculating and storing payload size and adding frame end
+; Register contracts:
+; Input:
+;   RBX = frame start pointer
+;   RCX = payload start pointer
+;   RDI = current write position
+; Output:
+;   RDI = position after frame end byte
+;   RAX = total frame length
+; Preserves: RBX, RCX
+finalize_frame:
+    ; Add frame end marker
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate payload size
+    push rdi
+    push rcx
+    sub rdi, rcx                    ; payload size = current pos - payload start
+    mov rax, rdi
+    
+    ; Store payload size in big endian (3 bytes) at frame + 3
+    mov [rbx + 5], al               ; low byte
+    mov [rbx + 4], ah               ; middle byte
+    shr rax, 16
+    mov [rbx + 3], al               ; high byte (sizes are small, so this is 0)
+    mov byte [rbx + 6], 0           ; reserved byte
+    
+    pop rcx
+    pop rdi
+    
+    ; Calculate total frame length
+    push rdi
+    sub rdi, rbx
+    mov rax, rdi
+    pop rdi
+    
+    ret
+
+; Copy string with length prefix (1 byte length + string content)
+; Register contracts:
+; Input:
+;   RDI = destination (will be advanced)
+;   RSI = source string
+;   RCX = string length
+; Output:
+;   RDI = position after copied data
+; Preserves: RSI, RCX
+copy_string_with_length:
+    push rsi
+    push rcx
+    
+    ; Store length prefix
+    mov [rdi], cl
+    inc rdi
+    
+    ; Copy string content
+    rep movsb
+    
+    pop rcx
+    pop rsi
+    ret
+
+; Write AMQP method header (class + method)
+; Register contracts:
+; Input:
+;   RDI = destination (will be advanced)
+;   RBX = class number (big endian)
+;   RCX = method number (big endian)
+; Output:
+;   RDI = position after method header
+; Preserves: RBX, RCX
+write_method_header:
+    mov [rdi], bx                   ; class (already big endian)
+    mov [rdi + 2], cx               ; method (already big endian)  
+    add rdi, 4
+    ret
+
+; Write 16-bit value in big endian
+; Register contracts:
+; Input:
+;   RDI = destination (will be advanced)
+;   RAX = value to write
+; Output:
+;   RDI = position after written value
+; Preserves: RAX
+write_be16:
+    mov [rdi], ah                   ; high byte first
+    mov [rdi + 1], al               ; low byte second
+    add rdi, 2
+    ret
+
+; Write 32-bit value in big endian  
+; Register contracts:
+; Input:
+;   RDI = destination (will be advanced)
+;   EAX = value to write
+; Output:
+;   RDI = position after written value
+; Preserves: EAX
+write_be32:
+    push rax
+    bswap eax                       ; convert to big endian
+    mov [rdi], eax
+    add rdi, 4
+    pop rax
+    ret
+
 send_connection_start_ok:
     call build_connection_start_ok_frame
     mov rdi, frame_buffer
@@ -1136,7 +1317,7 @@ send_connection_open:
     call send_frame
     ret
 
-; Build Connection.Open frame dynamically  
+; Build Connection.Open frame using layered abstractions
 ; Output: RAX = frame length, frame built in frame_buffer
 build_connection_open_frame:
     push rbx
@@ -1145,60 +1326,36 @@ build_connection_open_frame:
     push rsi
     push rdi
     
+    ; Initialize frame header: method frame, channel 0
     mov rdi, frame_buffer
+    mov rbx, 1                      ; frame type: method
+    mov rcx, 0                      ; channel 0
+    call init_frame_header
+    ; RBX = frame start, RCX = payload start, RDI = write position
     
-    ; Frame header
-    mov byte [rdi], 1               ; frame type (method)
-    mov word [rdi + 1], 0           ; channel 0 (big endian)
+    ; Write method header: Connection.Open (class 10, method 40)
+    push rbx
+    push rcx
+    mov rbx, 0x0A00                 ; class 10 (big endian)
+    mov rcx, 0x2800                 ; method 40 (big endian)
+    call write_method_header
+    pop rcx
+    pop rbx
     
-    ; Calculate payload size (we'll update this later)
-    mov rbx, rdi                    ; save frame start
-    add rdi, 7                      ; skip frame header
-    mov rcx, rdi                    ; save payload start
-    
-    ; Payload: Connection.Open method
-    mov word [rdi], 0x0A00          ; class 10 (big endian)
-    mov word [rdi + 2], 0x2800      ; method 40 (big endian)
-    add rdi, 4
-    
-    ; Virtual host length and string
-    mov rax, [runtime_vhost_len]
-    mov [rdi], al                   ; vhost length (1 byte)
-    inc rdi
-    
-    ; Copy vhost
-    mov rcx, rax
+    ; Write virtual host with length prefix
     mov rsi, runtime_vhost
-    rep movsb
+    push rcx
+    mov rcx, [runtime_vhost_len]
+    call copy_string_with_length
+    pop rcx
     
-    ; Reserved fields
-    mov word [rdi], 0               ; reserved
+    ; Write reserved fields (2 bytes zero)
+    mov word [rdi], 0
     add rdi, 2
     
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate payload size
-    push rdi
-    sub rdi, rcx                    ; payload size = current pos - payload start
-    mov rax, rdi
-    
-    ; Store payload size in big endian (3 bytes)
-    mov [rbx + 3], ah               ; high byte
-    mov [rbx + 4], al               ; middle byte  
-    mov byte [rbx + 5], 0           ; low byte
-    mov byte [rbx + 6], 0           ; reserved
-    shr rax, 8
-    mov [rbx + 5], al               ; correct middle byte
-    shr rax, 8  
-    mov [rbx + 4], al               ; correct high byte
-    
-    pop rdi
-    
-    ; Calculate total frame length
-    sub rdi, rbx
-    mov rax, rdi
+    ; Finalize frame
+    call finalize_frame
+    ; RAX = total frame length
     
     pop rdi
     pop rsi
@@ -1224,6 +1381,8 @@ declare_exchange:
 
 ; Build Exchange.Declare frame dynamically
 ; Output: RAX = frame length, frame built in frame_buffer
+; Build Exchange.Declare frame using layered abstractions
+; Output: RAX = frame length, frame built in frame_buffer
 build_exchange_declare_frame:
     push rbx
     push rcx
@@ -1231,74 +1390,50 @@ build_exchange_declare_frame:
     push rsi
     push rdi
     
+    ; Initialize frame header: method frame, channel 1
     mov rdi, frame_buffer
+    mov rbx, 1                      ; frame type: method
+    mov rcx, 1                      ; channel 1
+    call init_frame_header
+    ; RBX = frame start, RCX = payload start, RDI = write position
     
-    ; Frame header
-    mov byte [rdi], 1               ; frame type (method)
-    mov word [rdi + 1], 0x0100      ; channel 1 (big endian)
+    ; Write method header: Exchange.Declare (class 40, method 10)
+    push rbx
+    push rcx
+    mov rbx, 0x2800                 ; class 40 (big endian)
+    mov rcx, 0x0A00                 ; method 10 (big endian)
+    call write_method_header
+    pop rcx
+    pop rbx
     
-    ; Calculate payload size (we'll update this later)
-    mov rbx, rdi                    ; save frame start
-    add rdi, 7                      ; skip frame header
-    mov rcx, rdi                    ; save payload start
-    
-    ; Payload: Exchange.Declare method
-    mov word [rdi], 0x2800          ; class 40 (big endian)
-    mov word [rdi + 2], 0x0A00      ; method 10 (big endian)
-    add rdi, 4
-    
-    ; Reserved
-    mov word [rdi], 0               ; reserved
+    ; Write reserved field (2 bytes zero)
+    mov word [rdi], 0
     add rdi, 2
     
-    ; Exchange name length and string
-    mov rax, [runtime_exchange_len]
-    mov [rdi], al                   ; exchange length (1 byte)
-    inc rdi
-    
-    ; Copy exchange name
-    mov rcx, rax
+    ; Write exchange name with length prefix
     mov rsi, runtime_exchange
-    rep movsb
+    push rcx
+    mov rcx, [runtime_exchange_len]
+    call copy_string_with_length
+    pop rcx
     
-    ; Exchange type (topic)
+    ; Write exchange type "topic" with length prefix
     mov byte [rdi], 5               ; length
     mov dword [rdi + 1], "topi"     ; "topic" part 1
     mov byte [rdi + 5], "c"         ; "topic" part 2
     add rdi, 6
     
-    ; Flags: durable=1
-    mov byte [rdi], 0b00000010      ; durable
+    ; Write flags: durable=1
+    mov byte [rdi], 0b00000010
     inc rdi
     
-    ; Arguments (empty table)
-    mov dword [rdi], 0              ; empty table
+    ; Write arguments (empty table)
+    mov dword [rdi], 0
     add rdi, 4
     
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate payload size
-    push rdi
-    sub rdi, rcx                    ; payload size = current pos - payload start
-    mov rax, rdi
-    
-    ; Store payload size in big endian (3 bytes)
-    mov [rbx + 3], ah               ; high byte
-    mov [rbx + 4], al               ; middle byte  
-    mov byte [rbx + 5], 0           ; low byte
-    mov byte [rbx + 6], 0           ; reserved
-    shr rax, 8
-    mov [rbx + 5], al               ; correct middle byte
-    shr rax, 8  
-    mov [rbx + 4], al               ; correct high byte
-    
-    pop rdi
-    
-    ; Calculate total frame length
-    sub rdi, rbx
-    mov rax, rdi
+    ; Finalize frame
+    call finalize_frame
+    ; RAX = total frame length
     
     pop rdi
     pop rsi
