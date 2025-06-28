@@ -52,11 +52,8 @@ section .data
     port_be        dw ((PORT & 0xFF) << 8) | ((PORT >> 8) & 0xFF)
 
     ; Messages
-    usage_msg      db "Usage: ./amqp <mode> [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]", 10
-                   db "  mode: -s (sender) or -r (receiver)", 10
-                   db "  Password will be read from stdin if user is provided", 10, 0
+    usage_msg      db "Usage: ./amqp -s|-r"
     newline        db 10, 0 ; recycle the newline from the usage message
-    password_prompt db "Password: ", 0
     mode_err       db "Unknown mode. Use -s (sender) or -r (receiver)", 10, 0
 
     ; Error messages
@@ -65,8 +62,6 @@ section .data
     error_conn_fail      db "Connection failed", 10, 0
     error_frame_overflow db "Frame Overflow", 10, 0
     error_receive_buffer_overflow db "Receive Buffer Overflow", 10, 0
-    error_arg_too_long   db "Argument too long", 10, 0
-    error_invalid_port   db "Invalid port number", 10, 0
 
     ; Trace messages
     trace_send       db "Message sent to exchange: ", EXCHANGE, 10, 0
@@ -277,365 +272,35 @@ section .bss
     input_buffer   resb INPUT_BUFFER_SIZE
     message_len    resd 1
     hex_out_buffer: resb 2049
-    
-    ; Runtime configuration buffers
-    runtime_username    resb 64
-    runtime_password    resb 128
-    runtime_hostname    resb 256
-    runtime_port        resw 1
-    runtime_vhost       resb 128
-    runtime_queue       resb 256
-    runtime_exchange    resb 256
-    runtime_routing_key resb 256
     ;; hex_out_buffer: times 2048 db 0    ; Buffer for hex output (1024 bytes * 2 + null)
+    ; Runtime configuration overrides
+    runtime_username resb 64
+    runtime_password resb 64
+    runtime_host     resb 256
 
 section .text
     global _start
     extern gethostbyname
 
 _start:
-    ; Check minimum arguments (at least mode is required)
+    ; Check arguments - at least mode required
     mov rax, [rsp]
-    cmp rax, 1
-    jle show_usage
+    cmp rax, 2
+    jl show_usage
     
-    ; Initialize runtime config with compile-time defaults
-    call init_runtime_config
-    
-    ; Parse mode (required)
+    ; Parse optional runtime arguments 
+    call parse_runtime_args
+
+    ; Parse mode
     mov rsi, [rsp + 16]
     cmp byte [rsi], '-'
     jne mode_error
     mov al, [rsi + 1]
     cmp al, 's'
-    je check_optional_args_send
+    je mode_send
     cmp al, 'r'
-    je check_optional_args_receive
+    je mode_receive
     jmp mode_error
-
-check_optional_args_send:
-    mov rax, [rsp]
-    cmp rax, 3
-    jl mode_send  ; If only 2 args (program + mode), skip optional parsing
-    call parse_optional_args
-    jmp mode_send
-
-check_optional_args_receive:
-    mov rax, [rsp]
-    cmp rax, 3
-    jl mode_receive  ; If only 2 args (program + mode), skip optional parsing
-    call parse_optional_args
-    jmp mode_receive
-
-; Initialize runtime config with compile-time defaults
-init_runtime_config:
-    ; Copy username
-    mov rsi, username
-    mov rdi, runtime_username
-    mov rcx, username_len
-    rep movsb
-    mov byte [rdi], 0
-    
-    ; Copy password
-    mov rsi, password
-    mov rdi, runtime_password
-    mov rcx, password_len
-    rep movsb
-    mov byte [rdi], 0
-    
-    ; Copy hostname
-    mov rsi, host_str
-    mov rdi, runtime_hostname
-    call strcpy
-    
-    ; Copy port
-    mov ax, [port_be]
-    mov [runtime_port], ax
-    
-    ; Copy vhost
-    mov rsi, vhost
-    mov rdi, runtime_vhost
-    mov rcx, vhost_len
-    rep movsb
-    mov byte [rdi], 0
-    
-    ; Copy queue name
-    mov rsi, queue_name
-    mov rdi, runtime_queue
-    mov rcx, queue_name_len
-    rep movsb
-    mov byte [rdi], 0
-    
-    ; Copy exchange
-    mov rsi, exchange
-    mov rdi, runtime_exchange
-    mov rcx, exchange_len
-    rep movsb
-    mov byte [rdi], 0
-    
-    ; Copy routing key
-    mov rsi, routing_key
-    mov rdi, runtime_routing_key
-    mov rcx, routing_key_len
-    rep movsb
-    mov byte [rdi], 0
-    ret
-
-; Parse optional arguments and override defaults
-parse_optional_args:
-    mov rax, [rsp]       ; argc
-    cmp rax, 3           ; Need at least 3 args for username
-    jl .done             ; If < 3 args, skip all optional processing
-    
-    ; Check if username provided (argv[2])
-    mov rsi, [rsp + 24]  ; argv[2]
-    test rsi, rsi
-    jz .check_host
-    cmp byte [rsi], 0
-    je .check_host
-    
-    ; Copy username
-    mov rdi, runtime_username
-    call safe_strcpy
-    jc .arg_too_long
-    
-    ; Prompt for password
-    call read_password
-
-.check_host:
-    mov rax, [rsp]
-    cmp rax, 4
-    jl .done
-    mov rsi, [rsp + 32]  ; argv[3] - host
-    test rsi, rsi
-    jz .check_port
-    cmp byte [rsi], 0
-    je .check_port
-    mov rdi, runtime_hostname
-    call safe_strcpy
-    jc .arg_too_long
-
-.check_port:
-    mov rax, [rsp]
-    cmp rax, 5
-    jl .done
-    mov rsi, [rsp + 40]  ; argv[4] - port
-    test rsi, rsi
-    jz .check_vhost
-    cmp byte [rsi], 0
-    je .check_vhost
-    call simple_atoi
-    cmp rax, 65535
-    ja .invalid_port
-    ; Convert to network byte order and store
-    xchg al, ah
-    mov [runtime_port], ax
-
-.check_vhost:
-    mov rax, [rsp]
-    cmp rax, 6
-    jl .done
-    mov rsi, [rsp + 48]  ; argv[5] - vhost
-    test rsi, rsi
-    jz .check_queue
-    cmp byte [rsi], 0
-    je .check_queue
-    mov rdi, runtime_vhost
-    call safe_strcpy
-    jc .arg_too_long
-
-.check_queue:
-    mov rax, [rsp]
-    cmp rax, 7
-    jl .done
-    mov rsi, [rsp + 56]  ; argv[6] - queue
-    test rsi, rsi
-    jz .check_exchange
-    cmp byte [rsi], 0
-    je .check_exchange
-    mov rdi, runtime_queue
-    call safe_strcpy
-    jc .arg_too_long
-
-.check_exchange:
-    mov rax, [rsp]
-    cmp rax, 8
-    jl .done
-    mov rsi, [rsp + 64]  ; argv[7] - exchange
-    test rsi, rsi
-    jz .check_routing_key
-    cmp byte [rsi], 0
-    je .check_routing_key
-    mov rdi, runtime_exchange
-    call safe_strcpy
-    jc .arg_too_long
-
-.check_routing_key:
-    mov rax, [rsp]
-    cmp rax, 9
-    jl .done
-    mov rsi, [rsp + 72]  ; argv[8] - routing key
-    test rsi, rsi
-    jz .done
-    cmp byte [rsi], 0
-    je .done
-    mov rdi, runtime_routing_key
-    call safe_strcpy
-    jc .arg_too_long
-
-.done:
-    ret
-
-.arg_too_long:
-    mov rdi, error_arg_too_long
-    call print_string_to_stderr
-    jmp exit_error
-
-.invalid_port:
-    mov rdi, error_invalid_port
-    call print_string_to_stderr
-    jmp exit_error
-
-; Safe string copy with bounds checking
-; Input: RSI = source, RDI = dest (assumes 256 byte max)
-; Output: CF = 1 if too long
-safe_strcpy:
-    push rcx
-    mov rcx, 255
-.loop:
-    lodsb
-    stosb
-    test al, al
-    jz .done
-    loop .loop
-    ; String too long
-    stc
-    jmp .exit
-.done:
-    clc
-.exit:
-    pop rcx
-    ret
-
-; Simple string to integer conversion
-; Input: RSI = string pointer  
-; Output: RAX = integer value
-simple_atoi:
-    push rcx
-    xor rax, rax
-    mov rcx, 10
-.loop:
-    mov dl, [rsi]
-    test dl, dl
-    jz .done
-    cmp dl, '0'
-    jb .done
-    cmp dl, '9'
-    ja .done
-    sub dl, '0'
-    imul rax, rcx
-    movzx rdx, dl
-    add rax, rdx
-    inc rsi
-    jmp .loop
-.done:
-    pop rcx
-    ret
-
-; Parse port string to network byte order
-; Input: RSI = port string
-; Output: CF = 1 if invalid
-parse_port:
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    
-    xor rax, rax
-    mov rcx, 10
-    
-.loop:
-    mov bl, [rsi]
-    test bl, bl
-    jz .convert
-    
-    ; Check if digit
-    cmp bl, '0'
-    jb .invalid
-    cmp bl, '9'
-    ja .invalid
-    
-    ; Convert digit
-    sub bl, '0'
-    movzx rdx, bl
-    
-    ; Multiply current result by 10 and add digit
-    imul rax, rcx
-    add rax, rdx
-    
-    ; Check overflow
-    cmp rax, 65535
-    ja .invalid
-    
-    inc rsi
-    jmp .loop
-
-.convert:
-    ; Convert to network byte order
-    mov bx, ax
-    xchg bl, bh        ; swap bytes for network order
-    mov [runtime_port], bx
-    clc
-    jmp .done
-
-.invalid:
-    stc
-.done:
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-    ret
-
-; Read password with echo disabled
-read_password:
-    push rax
-    push rdi
-    push rsi
-    
-    ; Print prompt
-    mov rdi, password_prompt
-    call print_string_to_stdout
-    
-    ; Read password (simplified - just read from stdin)
-    mov rax, 0          ; sys_read
-    mov rdi, 0          ; stdin
-    mov rsi, runtime_password
-    mov rdx, 127        ; max length
-    syscall
-    
-    ; Remove newline
-    test rax, rax
-    jz .done
-    dec rax
-    mov byte [runtime_password + rax], 0
-    
-.done:
-    pop rsi
-    pop rdi
-    pop rax
-    ret
-
-; Copy null-terminated string
-strcpy:
-    push rax
-.loop:
-    lodsb
-    stosb
-    test al, al
-    jnz .loop
-    pop rax
-    ret
 
 mode_send:
     call setup_connection
@@ -716,7 +381,7 @@ resolve_and_connect:
     mov rbp, rsp
     and rsp, -16
 
-    mov rdi, runtime_hostname
+    mov rdi, host_str
     call gethostbyname
 
     mov rsp, rbp
@@ -736,7 +401,7 @@ resolve_and_connect:
 
     ; Setup sockaddr_in
     mov word [sockaddr], 2          ; AF_INET (little endian on x86)
-    mov ax, [runtime_port]
+    mov ax, [port_be]
     mov [sockaddr + 2], ax          ; port (big endian)
     mov eax, [rdi]                  ; IP (already network order)
     mov [sockaddr + 4], eax
@@ -805,119 +470,9 @@ send_amqp_header:
 
 
 send_connection_start_ok:
-    call build_connection_start_ok_frame
-    mov rdi, frame_buffer
-    mov rdx, rax    ; frame size returned by build function
+    mov rdi, conn_start_ok_frame
+    mov rdx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
     call send_frame
-    ret
-
-; Build Connection.StartOk frame with runtime credentials
-; Returns frame size in RAX
-build_connection_start_ok_frame:
-    push rbx
-    push rcx
-    push rsi
-    push rdi
-    
-    mov rdi, frame_buffer
-    
-    ; Frame type (1 = method frame)
-    mov byte [rdi], 1
-    inc rdi
-    
-    ; Channel (0)
-    mov word [rdi], 0
-    add rdi, 2
-    
-    ; Payload size placeholder
-    mov rbx, rdi  ; save position for payload size
-    add rdi, 4
-    
-    ; Method header: Connection.StartOk (class 10, method 11)
-    mov byte [rdi], 0
-    mov byte [rdi+1], 10
-    mov byte [rdi+2], 0
-    mov byte [rdi+3], 11
-    add rdi, 4
-    
-    ; Properties table (empty)
-    mov dword [rdi], 0
-    add rdi, 4
-    
-    ; Mechanism (PLAIN)
-    mov byte [rdi], 5
-    inc rdi
-    mov dword [rdi], 'NIAL'  ; PLAIN in little-endian  
-    mov byte [rdi+4], 'P'
-    add rdi, 5
-    
-    ; Response length placeholder
-    mov rcx, rdi
-    add rdi, 4
-    
-    ; SASL response: \0username\0password
-    mov byte [rdi], 0
-    inc rdi
-    
-    ; Copy runtime username
-    mov rsi, runtime_username
-.copy_user:
-    lodsb
-    test al, al
-    jz .user_done
-    stosb
-    jmp .copy_user
-.user_done:
-    mov byte [rdi], 0
-    inc rdi
-    
-    ; Copy runtime password  
-    mov rsi, runtime_password
-.copy_pass:
-    lodsb
-    test al, al
-    jz .pass_done
-    stosb
-    jmp .copy_pass
-.pass_done:
-    
-    ; Calculate SASL response length
-    sub rdi, rcx
-    sub rdi, 4
-    mov eax, edi
-    bswap eax   ; convert to network byte order
-    mov [rcx], eax
-    add rdi, rcx
-    add rdi, 4
-    
-    ; Locale
-    mov byte [rdi], 5
-    inc rdi
-    mov dword [rdi], 'SU_n'  ; en_US in little-endian
-    mov byte [rdi+4], 'e'
-    add rdi, 5
-    
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate total payload size
-    sub rdi, rbx
-    sub rdi, 4
-    mov eax, edi
-    bswap eax   ; convert to network byte order  
-    mov [rbx], eax
-    
-    ; Calculate total frame size
-    add rdi, rbx
-    add rdi, 4
-    sub rdi, frame_buffer
-    mov rax, rdi
-    
-    pop rdi
-    pop rsi
-    pop rcx
-    pop rbx
     ret
 
 send_connection_tune_ok:
@@ -927,82 +482,9 @@ send_connection_tune_ok:
     ret
 
 send_connection_open:
-    call build_connection_open_frame
-    mov rdi, frame_buffer
-    mov rdx, rax
+    mov rdi, conn_open_frame
+    mov rdx, (conn_open_payload_end - conn_open_frame + 1)
     call send_frame
-    ret
-
-; Build Connection.Open frame with runtime vhost
-; Returns frame size in RAX
-build_connection_open_frame:
-    push rbx
-    push rcx
-    push rsi
-    push rdi
-    
-    mov rdi, frame_buffer
-    
-    ; Frame type (1 = method frame)
-    mov byte [rdi], 1
-    inc rdi
-    
-    ; Channel (0)
-    mov word [rdi], 0
-    add rdi, 2
-    
-    ; Payload size placeholder
-    mov rbx, rdi
-    add rdi, 4
-    
-    ; Method header: Connection.Open (class 10, method 40)
-    mov byte [rdi], 0
-    mov byte [rdi+1], 10
-    mov byte [rdi+2], 0
-    mov byte [rdi+3], 40
-    add rdi, 4
-    
-    ; Virtual host length + string
-    mov rsi, runtime_vhost
-    call strlen
-    mov byte [rdi], al
-    inc rdi
-    
-    ; Copy vhost
-    mov rsi, runtime_vhost
-.copy_vhost:
-    lodsb
-    test al, al
-    jz .vhost_done
-    stosb
-    jmp .copy_vhost
-.vhost_done:
-    
-    ; Reserved fields (2 bytes)
-    mov word [rdi], 0
-    add rdi, 2
-    
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate payload size
-    sub rdi, rbx
-    sub rdi, 4
-    mov eax, edi
-    bswap eax
-    mov [rbx], eax
-    
-    ; Calculate total frame size
-    add rdi, rbx
-    add rdi, 4
-    sub rdi, frame_buffer
-    mov rax, rdi
-    
-    pop rdi
-    pop rsi
-    pop rcx
-    pop rbx
     ret
 
 open_channel:
