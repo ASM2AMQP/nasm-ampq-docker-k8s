@@ -52,7 +52,7 @@ RUN ld -dynamic-linker /lib/ld-musl-x86_64.so.1 -lc amqp.o -o amqp
 FROM base AS final
 
 # Install only runtime dependencies
-#RUN apk add --no-cache musl netcat-openbsd
+RUN apk add --no-cache netcat-openbsd
 
 ARG HOST
 ARG PORT
