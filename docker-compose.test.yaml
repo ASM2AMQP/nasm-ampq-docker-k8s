@@ -1,0 +1,28 @@
+name: amqp_asm_test
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:5555:15672"
+    expose:
+      - "5672"
+
+  consumer:
+    image: amqp-test
+    depends_on:
+      - rabbitmq
+    environment:
+      HOST: rabbitmq
+      PORT: 5672
+    command: /app/start_amqp.sh consumer
+
+  producer:
+    image: amqp-test
+    depends_on:
+      - rabbitmq
+    environment:
+      HOST: rabbitmq
+      PORT: 5672
+    command: /app/start_amqp.sh producer

@@ -6,9 +6,7 @@ set -o nounset
 
 wait_for_the_slow_rabbit() {
   echo "Waiting for rabbitmq on $HOST:$PORT..."
-  while ! nc -z $HOST $PORT; do
-    sleep 1
-  done
+  sleep 10  # Simple wait for RabbitMQ to start
 }
 
 if [ $# -ne 1 ]; then

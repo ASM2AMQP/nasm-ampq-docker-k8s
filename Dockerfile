@@ -9,7 +9,9 @@ RUN adduser -D appuser \
 FROM base AS build
 
 # Install build dependencies here
-RUN apk add --no-cache nasm binutils musl-dev
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/v3.22/main" > /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/v3.22/community" >> /etc/apk/repositories && \
+    apk update && apk add --no-cache nasm binutils musl-dev
 
 ARG USERNAME
 ARG PASSWORD
@@ -51,8 +53,8 @@ RUN ld -dynamic-linker /lib/ld-musl-x86_64.so.1 -lc amqp.o -o amqp
 
 FROM base AS final
 
-# Install only runtime dependencies
-RUN apk add --no-cache netcat-openbsd
+# Install only runtime dependencies - netcat is included in busybox by default
+# RUN apk add --no-cache netcat-openbsd || apk add --no-cache netcat-traditional || apk add --no-cache busybox-extras
 
 ARG HOST
 ARG PORT
