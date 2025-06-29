@@ -377,8 +377,17 @@ _start:
 .check_password:
     ; If username was provided, prompt for password
     cmp byte [runtime_username], 0
-    je .parse_mode
+    je .init_port_default
     call prompt_password
+
+.init_port_default:
+    ; Initialize port string if not provided
+    cmp byte [runtime_port], 0
+    jne .parse_mode
+    ; Convert compile-time PORT to string in runtime_port
+    mov rdi, runtime_port
+    mov rax, PORT
+    call int_to_string
 
 .parse_mode:
     ; Parse mode
@@ -487,8 +496,8 @@ resolve_and_connect:
     mov rdi, host_str       ; use default if runtime_host is empty
 .use_runtime_host:
     
-    ; Call getaddrinfo(hostname, NULL, &hints, &result)
-    xor rsi, rsi                ; service (NULL)
+    ; Call getaddrinfo(hostname, port_string, &hints, &result)
+    mov rsi, runtime_port       ; use runtime_port (guaranteed to have a value)
     lea rdx, [addrinfo_hints]   ; hints
     lea rcx, [addrinfo_res]     ; result pointer
     call getaddrinfo
@@ -1636,6 +1645,53 @@ copy_argument:
     pop rcx
     pop rdi
     pop rsi
+    ret
+
+; Convert integer to string (simple implementation for small positive numbers)
+; Input: RAX = integer, RDI = destination buffer
+; Output: null-terminated string in buffer
+int_to_string:
+    push rbx
+    push rcx
+    push rdx
+    
+    mov rbx, 10         ; divisor
+    mov rcx, 0          ; digit counter
+    
+    ; Handle zero case
+    test rax, rax
+    jnz .convert_loop
+    mov byte [rdi], '0'
+    mov byte [rdi + 1], 0
+    jmp .done
+    
+.convert_loop:
+    test rax, rax
+    jz .reverse_digits
+    
+    xor rdx, rdx        ; clear remainder
+    div rbx             ; divide by 10
+    add dl, '0'         ; convert remainder to ASCII
+    push rdx            ; store digit on stack
+    inc rcx             ; increment digit count
+    jmp .convert_loop
+    
+.reverse_digits:
+    test rcx, rcx
+    jz .add_null
+    pop rdx
+    mov [rdi], dl
+    inc rdi
+    dec rcx
+    jmp .reverse_digits
+    
+.add_null:
+    mov byte [rdi], 0   ; null terminator
+    
+.done:
+    pop rdx
+    pop rcx
+    pop rbx
     ret
 
 ; Prompt for password with echo disabled
