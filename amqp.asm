@@ -499,33 +499,54 @@ resolve_and_connect:
     test rax, rax
     jnz dns_fail_handler        ; getaddrinfo returns 0 on success
     
-    ; Get the first addrinfo result
+    ; Iterate through all addresses returned by getaddrinfo
     mov rsi, [addrinfo_res]
     test rsi, rsi
     jz dns_fail_handler
+
+.try_next_address:
+    test rsi, rsi
+    jz connect_fail_handler         ; No more addresses to try
     
-    ; Create socket using address family from result
+    ; Create socket using address family from current result
     mov rax, 41                     ; sys_socket
     mov edi, [rsi + 4]              ; ai_family from addrinfo (offset 4)
+    push rsi                        ; save current addrinfo
     mov rsi, 1                      ; SOCK_STREAM
     mov rdx, 0                      ; protocol
     syscall
+    pop rsi                         ; restore current addrinfo
     
     test rax, rax
-    js socket_fail_handler
+    js .try_next                    ; socket creation failed, try next address
     mov [sockfd], eax
     
-    ; Connect using sockaddr from addrinfo result
+    ; Connect using sockaddr from current addrinfo result
     mov rax, 42                     ; sys_connect
     mov rdi, [sockfd]
-    mov rsi, [addrinfo_res]
-    mov rsi, [rsi + 24]             ; ai_addr from addrinfo (offset 24)
-    mov rdx, [addrinfo_res]
-    mov edx, [rdx + 16]             ; ai_addrlen from addrinfo (offset 16)
+    push rsi                        ; save current addrinfo
+    mov rdi, [sockfd]
+    mov rdx, [rsi + 24]             ; ai_addr from addrinfo (offset 24)
+    mov rcx, [rsi + 16]             ; ai_addrlen from addrinfo (offset 16)
+    mov rsi, rdx                    ; ai_addr
+    mov rdx, rcx                    ; ai_addrlen
     syscall
+    pop rsi                         ; restore current addrinfo
     
     test rax, rax
-    js connect_fail_handler
+    jns .connection_success         ; Connection succeeded
+    
+    ; Connection failed, close socket and try next address
+    mov rax, 3                      ; sys_close
+    mov rdi, [sockfd]
+    syscall
+
+.try_next:
+    ; Move to next addrinfo in linked list
+    mov rsi, [rsi + 32]             ; ai_next from addrinfo (offset 32)
+    jmp .try_next_address
+
+.connection_success:
     ret
 
 amqp_handshake:
