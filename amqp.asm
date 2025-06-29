@@ -64,6 +64,8 @@ section .data
     usage_msg      db "Usage: ./amqp <mode> [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]", 10
                    db "  mode: -s (sender) or -r (receiver)", 10
                    db "  Optional args use compile-time defaults if empty/missing", 10, 0
+    password_prompt db "Password: ", 0
+    password_prompt_len equ $ - password_prompt - 1
     newline        db 10, 0
     mode_err       db "Unknown mode. Use -s (sender) or -r (receiver)", 10, 0
 
@@ -307,32 +309,77 @@ _start:
     cmp rax, 2
     jl show_usage
     
-    ; Simple runtime username parsing - if argc >= 3, use argv[2] as username
+    ; Parse optional arguments: [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]
+    ; argc stored in rax, argv pointers start at [rsp + 16]
+    
+    ; Parse username (argv[2])
     cmp rax, 3
-    jl .parse_mode
-    mov rsi, [rsp + 24]    ; argv[2]
-    test rsi, rsi
-    jz .parse_mode
-    cmp byte [rsi], 0      ; check for empty string
-    je .parse_mode
-    
-    ; Copy username to runtime buffer (simple copy)
+    jl .parse_host
+    mov rsi, [rsp + 24]         ; argv[2]
     mov rdi, runtime_username
-    mov rcx, USERNAME_MAX - 1
-.copy_loop:
-    test rcx, rcx
-    jz .copy_done
-    mov al, [rsi]
-    test al, al
-    jz .copy_done
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    dec rcx
-    jmp .copy_loop
-.copy_done:
-    mov byte [rdi], 0
+    mov rcx, USERNAME_MAX
+    call copy_argument
     
+.parse_host:
+    ; Parse host (argv[3])  
+    cmp rax, 4
+    jl .parse_port
+    mov rsi, [rsp + 32]         ; argv[3]
+    mov rdi, runtime_host
+    mov rcx, HOSTNAME_MAX
+    call copy_argument
+    
+.parse_port:
+    ; Parse port (argv[4])
+    cmp rax, 5
+    jl .parse_vhost
+    mov rsi, [rsp + 40]         ; argv[4]
+    mov rdi, runtime_port
+    mov rcx, 8
+    call copy_argument
+    
+.parse_vhost:
+    ; Parse vhost (argv[5])
+    cmp rax, 6
+    jl .parse_queuename
+    mov rsi, [rsp + 48]         ; argv[5]
+    mov rdi, runtime_vhost
+    mov rcx, VHOST_MAX
+    call copy_argument
+    
+.parse_queuename:
+    ; Parse queuename (argv[6])
+    cmp rax, 7
+    jl .parse_exchange
+    mov rsi, [rsp + 56]         ; argv[6]
+    mov rdi, runtime_queuename
+    mov rcx, QUEUENAME_MAX
+    call copy_argument
+    
+.parse_exchange:
+    ; Parse exchange (argv[7])
+    cmp rax, 8
+    jl .parse_routingkey
+    mov rsi, [rsp + 64]         ; argv[7]
+    mov rdi, runtime_exchange
+    mov rcx, EXCHANGE_MAX
+    call copy_argument
+    
+.parse_routingkey:
+    ; Parse routingkey (argv[8])
+    cmp rax, 9
+    jl .check_password
+    mov rsi, [rsp + 72]         ; argv[8]
+    mov rdi, runtime_routingkey
+    mov rcx, ROUTINGKEY_MAX
+    call copy_argument
+
+.check_password:
+    ; If username was provided, prompt for password
+    cmp byte [runtime_username], 0
+    je .parse_mode
+    call prompt_password
+
 .parse_mode:
     ; Parse mode
     mov rsi, [rsp + 16]
@@ -527,31 +574,9 @@ send_connection_start_ok:
     je .send_static
     
     ; Build dynamic frame with runtime credentials
-    ; Copy static frame to frame_buffer first
-    mov rsi, conn_start_ok_frame
+    call build_connection_start_ok_frame
     mov rdi, frame_buffer
-    mov rcx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
-    rep movsb
-    
-    ; Patch username in the copied frame
-    ; Find position of username (after "PLAIN" + length field)
-    mov rdi, frame_buffer
-    add rdi, (sasl_start - conn_start_ok_frame + 1)  ; position after null byte before username
-    
-    ; Copy runtime username
-    mov rsi, runtime_username
-.copy_username:
-    mov al, [rsi]
-    test al, al
-    jz .send_dynamic
-    mov [rdi], al
-    inc rsi
-    inc rdi
-    jmp .copy_username
-    
-.send_dynamic:
-    mov rdi, frame_buffer
-    mov rdx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
+    mov edx, eax                ; frame size returned in eax
     call send_frame
     ret
     
@@ -561,6 +586,125 @@ send_connection_start_ok:
     call send_frame
     ret
 
+; Build Connection.StartOk frame with runtime credentials
+build_connection_start_ok_frame:
+    push rsi
+    push rdi
+    push rcx
+    push rdx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 0           ; channel 0
+    add rdi, 2
+    add rdi, 4                  ; skip payload size for now
+    
+    ; Method header
+    mov word [rdi], 0x000A      ; class 10 (Connection)
+    add rdi, 2
+    mov word [rdi], 0x000B      ; method 11 (StartOk)
+    add rdi, 2
+    
+    ; Client properties table (empty for simplicity)
+    mov dword [rdi], 0
+    add rdi, 4
+    
+    ; Mechanism (PLAIN)
+    mov byte [rdi], 5           ; length
+    inc rdi
+    mov rax, 'PLAIN'
+    mov [rdi], rax
+    add rdi, 4
+    mov byte [rdi], 0           ; null terminator for PLAIN
+    inc rdi
+    
+    ; Response (SASL authentication)
+    ; Calculate total auth string length: 1 + username_len + 1 + password_len
+    mov rsi, runtime_username
+    call str_len
+    mov rdx, rcx                ; username length
+    
+    mov rsi, runtime_password
+    call str_len                ; password length in rcx
+    
+    add rdx, rcx                ; username + password lengths
+    add rdx, 2                  ; + 2 null separators
+    
+    mov [rdi], dl               ; auth string length
+    inc rdi
+    
+    ; Auth string format: \0username\0password
+    mov byte [rdi], 0           ; first null
+    inc rdi
+    
+    ; Copy username
+    mov rsi, runtime_username
+    mov rcx, rdx                ; reuse calculated length
+    sub rcx, 2                  ; subtract nulls, keep username+password
+    mov rax, rsi
+    call str_len                ; get actual username length in rcx
+.copy_username:
+    test rcx, rcx
+    jz .username_done
+    mov al, [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .copy_username
+.username_done:
+    
+    mov byte [rdi], 0           ; separator null
+    inc rdi
+    
+    ; Copy password  
+    mov rsi, runtime_password
+    call str_len
+.copy_password:
+    test rcx, rcx
+    jz .password_done
+    mov al, [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .copy_password
+.password_done:
+    
+    ; Locale
+    mov byte [rdi], 5           ; length
+    inc rdi
+    mov rax, 'en_US'
+    mov [rdi], rax
+    add rdi, 4
+    mov byte [rdi], 0
+    inc rdi
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer
+    sub rax, 8                  ; subtract frame header
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax
+    
+    ; Return total frame size
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rdx
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
 send_connection_tune_ok:
     mov rdi, conn_tune_ok_frame
     mov rdx, (conn_tune_ok_payload_end - conn_tune_ok_frame + 1)
@@ -568,9 +712,75 @@ send_connection_tune_ok:
     ret
 
 send_connection_open:
-    mov rdi, conn_open_frame
-    mov rdx, (conn_open_payload_end - conn_open_frame + 1)
+    ; Build dynamic Connection.Open frame
+    call build_connection_open_frame
+    mov rdi, frame_buffer
+    mov edx, eax                ; frame size returned in eax
     call send_frame
+    ret
+
+; Build Connection.Open frame with runtime vhost
+build_connection_open_frame:
+    push rsi
+    push rdi
+    push rcx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type  
+    inc rdi
+    mov word [rdi], 0           ; channel 0
+    add rdi, 2
+    
+    ; Skip payload size for now
+    add rdi, 4
+    
+    ; Method header
+    mov word [rdi], 0x000A      ; class 10 (Connection)
+    add rdi, 2
+    mov word [rdi], 0x0028      ; method 40 (Open)  
+    add rdi, 2
+    
+    ; Virtual host - use runtime or default
+    mov rsi, runtime_vhost
+    cmp byte [rsi], 0
+    jne .use_runtime_vhost
+    mov rsi, vhost
+    mov cl, vhost_len
+    jmp .copy_vhost
+    
+.use_runtime_vhost:
+    call str_len                ; get length in rcx
+    
+.copy_vhost:
+    mov [rdi], cl               ; vhost length
+    inc rdi
+    rep movsb                   ; copy vhost string
+    
+    ; Reserved fields
+    mov word [rdi], 0
+    add rdi, 2
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer       ; total frame size
+    sub rax, 8                  ; subtract frame header size  
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax              ; set payload size (big endian handled by hardware)
+    
+    ; Return total frame size in eax
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rcx
+    pop rdi
+    pop rsi
     ret
 
 open_channel:
@@ -581,37 +791,370 @@ open_channel:
     ret
 
 declare_exchange:
-    mov rdi, exchange_declare_frame
-    mov rdx, (exchange_declare_payload_end - exchange_declare_frame + 1)
+    ; Build dynamic Exchange.Declare frame
+    call build_exchange_declare_frame
+    mov rdi, frame_buffer
+    mov edx, eax                ; frame size returned in eax
     call send_frame
     call receive_frame
+    ret
+
+build_exchange_declare_frame:
+    push rsi
+    push rdi
+    push rcx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 1           ; channel 1
+    add rdi, 2
+    add rdi, 4                  ; skip payload size
+    
+    ; Method header
+    mov word [rdi], 0x0028      ; class 40 (Exchange)
+    add rdi, 2
+    mov word [rdi], 0x000A      ; method 10 (Declare)
+    add rdi, 2
+    
+    ; Reserved short
+    mov word [rdi], 0
+    add rdi, 2
+    
+    ; Exchange name - use runtime or default
+    mov rsi, runtime_exchange
+    cmp byte [rsi], 0
+    jne .use_runtime_exchange
+    mov rsi, exchange
+    mov rcx, exchange_len
+    jmp .copy_exchange
+    
+.use_runtime_exchange:
+    call str_len
+    
+.copy_exchange:
+    mov [rdi], cl               ; exchange name length
+    inc rdi
+    rep movsb                   ; copy exchange name
+    
+    ; Type (topic)
+    mov byte [rdi], 5           ; length
+    inc rdi
+    mov rax, 'topic'
+    mov [rdi], rax
+    add rdi, 5
+    
+    ; Flags (passive=0, durable=1, auto-delete=0, internal=0, nowait=0)
+    mov byte [rdi], 0x02
+    inc rdi
+    
+    ; Arguments table (empty)
+    mov dword [rdi], 0
+    add rdi, 4
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer
+    sub rax, 8
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax
+    
+    ; Return total frame size
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rcx
+    pop rdi
+    pop rsi  
     ret
 
 declare_queue:
-    mov rdi, queue_declare_frame
-    mov rdx, (queue_declare_payload_end - queue_declare_frame + 1)
+    ; Build dynamic Queue.Declare frame
+    call build_queue_declare_frame  
+    mov rdi, frame_buffer
+    mov edx, eax                ; frame size returned in eax
     call send_frame
     call receive_frame
+    ret
+
+; Build Queue.Declare frame with runtime queue name
+build_queue_declare_frame:
+    push rsi
+    push rdi
+    push rcx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 1           ; channel 1
+    add rdi, 2
+    add rdi, 4                  ; skip payload size
+    
+    ; Method header  
+    mov word [rdi], 0x0032      ; class 50 (Queue)
+    add rdi, 2
+    mov word [rdi], 0x000A      ; method 10 (Declare)
+    add rdi, 2
+    
+    ; Reserved short
+    mov word [rdi], 0
+    add rdi, 2
+    
+    ; Queue name - use runtime or default
+    mov rsi, runtime_queuename
+    cmp byte [rsi], 0
+    jne .use_runtime_queue
+    mov rsi, queue_name
+    mov rcx, queue_name_len
+    jmp .copy_queue
+    
+.use_runtime_queue:
+    call str_len
+    
+.copy_queue:
+    mov [rdi], cl               ; queue name length
+    inc rdi
+    rep movsb                   ; copy queue name
+    
+    ; Flags (passive=0, durable=1, exclusive=0, auto-delete=0, nowait=0)
+    mov byte [rdi], 0x02
+    inc rdi
+    
+    ; Arguments table (empty)
+    mov dword [rdi], 0
+    add rdi, 4
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer
+    sub rax, 8
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax
+    
+    ; Return total frame size
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rcx
+    pop rdi
+    pop rsi
     ret
 
 bind_queue:
-    mov rdi, queue_bind_frame
-    mov rdx, (queue_bind_payload_end - queue_bind_frame + 1)
+    ; Build dynamic Queue.Bind frame  
+    call build_queue_bind_frame
+    mov rdi, frame_buffer
+    mov edx, eax                ; frame size returned in eax
     call send_frame
     call receive_frame
+    ret
+
+; Build Queue.Bind frame with runtime parameters
+build_queue_bind_frame:
+    push rsi
+    push rdi
+    push rcx
+    push rdx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 1           ; channel 1
+    add rdi, 2
+    add rdi, 4                  ; skip payload size
+    
+    ; Method header
+    mov word [rdi], 0x0032      ; class 50 (Queue)
+    add rdi, 2
+    mov word [rdi], 0x0014      ; method 20 (Bind)
+    add rdi, 2
+    
+    ; Reserved short
+    mov word [rdi], 0
+    add rdi, 2
+    
+    ; Queue name - use runtime or default
+    mov rsi, runtime_queuename
+    cmp byte [rsi], 0
+    jne .use_runtime_queue
+    mov rsi, queue_name
+    mov rcx, queue_name_len
+    jmp .copy_queue
+    
+.use_runtime_queue:
+    call str_len
+    
+.copy_queue:
+    mov [rdi], cl               ; queue name length
+    inc rdi
+    rep movsb                   ; copy queue name
+    
+    ; Exchange name - use runtime or default
+    mov rsi, runtime_exchange
+    cmp byte [rsi], 0
+    jne .use_runtime_exchange
+    mov rsi, exchange  
+    mov rcx, exchange_len
+    jmp .copy_exchange
+    
+.use_runtime_exchange:
+    call str_len
+    
+.copy_exchange:
+    mov [rdi], cl               ; exchange name length
+    inc rdi
+    rep movsb                   ; copy exchange name
+    
+    ; Routing key - use runtime or default
+    mov rsi, runtime_routingkey
+    cmp byte [rsi], 0
+    jne .use_runtime_routing
+    mov rsi, routing_key
+    mov rcx, routing_key_len
+    jmp .copy_routing
+    
+.use_runtime_routing:
+    call str_len
+    
+.copy_routing:
+    mov [rdi], cl               ; routing key length
+    inc rdi
+    rep movsb                   ; copy routing key
+    
+    ; Nowait flag
+    mov byte [rdi], 0
+    inc rdi
+    
+    ; Arguments table (empty)
+    mov dword [rdi], 0
+    add rdi, 4
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer
+    sub rax, 8
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax
+    
+    ; Return total frame size
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rdx
+    pop rcx
+    pop rdi
+    pop rsi
     ret
 
 start_consuming:
-    mov rdi, basic_consume_frame
-    mov rdx, (basic_consume_payload_end - basic_consume_frame + 1)
+    ; Build dynamic Basic.Consume frame
+    call build_basic_consume_frame
+    mov rdi, frame_buffer
+    mov edx, eax                ; frame size returned in eax
     call send_frame
     call receive_frame
     ret
 
+; Build Basic.Consume frame with runtime queue name
+build_basic_consume_frame:
+    push rsi
+    push rdi
+    push rcx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 1           ; channel 1
+    add rdi, 2
+    add rdi, 4                  ; skip payload size
+    
+    ; Method header
+    mov word [rdi], 0x003C      ; class 60 (Basic)
+    add rdi, 2
+    mov word [rdi], 0x0014      ; method 20 (Consume)
+    add rdi, 2
+    
+    ; Reserved short
+    mov word [rdi], 0
+    add rdi, 2
+    
+    ; Queue name - use runtime or default
+    mov rsi, runtime_queuename
+    cmp byte [rsi], 0
+    jne .use_runtime_queue
+    mov rsi, queue_name
+    mov rcx, queue_name_len
+    jmp .copy_queue
+    
+.use_runtime_queue:
+    call str_len
+    
+.copy_queue:
+    mov [rdi], cl               ; queue name length
+    inc rdi
+    rep movsb                   ; copy queue name
+    
+    ; Consumer tag (empty)
+    mov byte [rdi], 0
+    inc rdi
+    
+    ; Flags (no-local=0, no-ack=1, exclusive=0, nowait=0)
+    mov byte [rdi], 0x02
+    inc rdi
+    
+    ; Arguments table (empty)
+    mov dword [rdi], 0
+    add rdi, 4
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer
+    sub rax, 8
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax
+    
+    ; Return total frame size
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
 publish_message:
-    ; Send Basic.Publish method frame
-    mov rdi, basic_publish_frame
-    mov rdx, (basic_publish_payload_end - basic_publish_frame + 1)
+    ; Build and send dynamic Basic.Publish method frame
+    call build_basic_publish_frame
+    mov rdi, frame_buffer
+    mov edx, eax                ; frame size returned in eax
     call send_frame
 
     ; Send content header
@@ -619,6 +1162,88 @@ publish_message:
 
     ; Send content body
     call send_content_body
+    ret
+
+; Build Basic.Publish frame with runtime exchange and routing key
+build_basic_publish_frame:
+    push rsi
+    push rdi
+    push rcx
+    
+    mov rdi, frame_buffer
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 1           ; channel 1
+    add rdi, 2
+    add rdi, 4                  ; skip payload size
+    
+    ; Method header
+    mov word [rdi], 0x003C      ; class 60 (Basic)
+    add rdi, 2
+    mov word [rdi], 0x0028      ; method 40 (Publish)
+    add rdi, 2
+    
+    ; Reserved short
+    mov word [rdi], 0
+    add rdi, 2
+    
+    ; Exchange name - use runtime or default
+    mov rsi, runtime_exchange
+    cmp byte [rsi], 0
+    jne .use_runtime_exchange
+    mov rsi, exchange
+    mov rcx, exchange_len
+    jmp .copy_exchange
+    
+.use_runtime_exchange:
+    call str_len
+    
+.copy_exchange:
+    mov [rdi], cl               ; exchange name length
+    inc rdi
+    rep movsb                   ; copy exchange name
+    
+    ; Routing key - use runtime or default
+    mov rsi, runtime_routingkey
+    cmp byte [rsi], 0
+    jne .use_runtime_routing
+    mov rsi, routing_key
+    mov rcx, routing_key_len
+    jmp .copy_routing
+    
+.use_runtime_routing:
+    call str_len
+    
+.copy_routing:
+    mov [rdi], cl               ; routing key length
+    inc rdi
+    rep movsb                   ; copy routing key
+    
+    ; Flags (mandatory=0, immediate=0)
+    mov byte [rdi], 0
+    inc rdi
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate and set payload size
+    mov rax, rdi
+    sub rax, frame_buffer
+    sub rax, 8
+    mov rsi, frame_buffer
+    add rsi, 3
+    mov [rsi], eax
+    
+    ; Return total frame size
+    mov rax, rdi
+    sub rax, frame_buffer
+    
+    pop rcx
+    pop rdi
+    pop rsi
     ret
 
 send_content_header:
@@ -935,6 +1560,100 @@ convert_done_spaced:
     pop rcx
     pop rdi
     pop rsi
+    ret
+
+; Calculate string length 
+; Input: rsi = string pointer
+; Output: rcx = length
+str_len:
+    push rax
+    push rsi
+    xor rcx, rcx
+.count_loop:
+    mov al, [rsi]
+    test al, al
+    jz .done
+    inc rcx
+    inc rsi
+    jmp .count_loop
+.done:
+    pop rsi
+    pop rax
+    ret
+
+; Copy command line argument to buffer if present and non-empty
+; Input: rsi = source string pointer, rdi = destination buffer, rcx = buffer size
+; Modifies: rax, rdx
+copy_argument:
+    push rsi
+    push rdi
+    push rcx
+    
+    ; Check if argument exists and is not empty
+    test rsi, rsi
+    jz .done
+    cmp byte [rsi], 0
+    je .done
+    
+    ; Copy argument to buffer
+    dec rcx                     ; leave space for null terminator
+.copy_loop:
+    test rcx, rcx
+    jz .copy_done
+    mov al, [rsi]
+    test al, al
+    jz .copy_done
+    mov [rdi], al
+    inc rsi
+    inc rdi  
+    dec rcx
+    jmp .copy_loop
+.copy_done:
+    mov byte [rdi], 0
+    
+.done:
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
+; Prompt for password with echo disabled
+prompt_password:
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    
+    ; Print password prompt to stderr
+    mov rax, 1                  ; sys_write
+    mov rdi, 2                  ; stderr
+    mov rsi, password_prompt
+    mov rdx, password_prompt_len
+    syscall
+    
+    ; Disable terminal echo (basic implementation)
+    ; Read password from stdin
+    mov rax, 0                  ; sys_read
+    mov rdi, 0                  ; stdin
+    mov rsi, runtime_password
+    mov rdx, PASSWORD_MAX - 1
+    syscall
+    
+    ; Remove trailing newline if present
+    test rax, rax
+    jz .password_done
+    mov rdi, runtime_password
+    add rdi, rax
+    dec rdi
+    cmp byte [rdi], 10          ; newline
+    jne .password_done
+    mov byte [rdi], 0
+    
+.password_done:
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
     ret
 
 cleanup_exit:
