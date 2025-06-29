@@ -6,7 +6,9 @@ set -o nounset
 
 wait_for_the_slow_rabbit() {
   echo "Waiting for rabbitmq on $HOST:$PORT..."
-  sleep 10  # Simple wait for RabbitMQ to start
+  while ! nc -z $HOST $PORT; do
+    sleep 1
+  done
 }
 
 if [ $# -ne 1 ]; then
@@ -22,7 +24,7 @@ case "$1" in
     ;;
   producer)
     echo "Running producer ..."
-    wait_for_the_slow_rabbit && while date; do sleep 1; done | /app/amqp -s
+    wait_for_the_slow_rabbit && while date; do sleep 1; done | ./amqp -s
     # Add producer-specific commands here
     ;;
   *)
