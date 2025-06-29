@@ -299,7 +299,6 @@ section .bss
 section .text
     global _start
     extern getaddrinfo
-    extern freeaddrinfo
 
 
 _start:
@@ -477,17 +476,6 @@ resolve_and_connect:
     mov rdx, [addrinfo_res]
     mov edx, [rdx + 16]             ; ai_addrlen from addrinfo (offset 16)
     syscall
-    
-    ; Free addrinfo result
-    push rax                        ; save connect result
-    push rbp
-    mov rbp, rsp
-    and rsp, -16
-    mov rdi, [addrinfo_res]
-    call freeaddrinfo
-    mov rsp, rbp
-    pop rbp
-    pop rax                         ; restore connect result
     
     test rax, rax
     js connect_fail_handler
