@@ -530,12 +530,14 @@ resolve_and_connect:
 
 .try_address:
     test rsi, rsi
-    jz dns_fail_handler     ; No more addresses to try
+    jz connect_fail_handler     ; No more addresses to try
+
+    ; Save current addrinfo pointer
+    mov r8, rsi
 
     ; Create socket with the address family from addrinfo
     mov rax, 41             ; sys_socket
     mov edi, [rsi + 4]      ; ai_family from addrinfo
-    push rsi                ; save addrinfo pointer
     mov rsi, 1              ; SOCK_STREAM
     mov rdx, 0              ; protocol
     syscall
@@ -547,11 +549,8 @@ resolve_and_connect:
     ; Connect using the sockaddr from addrinfo
     mov rax, 42             ; sys_connect
     mov rdi, [sockfd]
-    pop rsi                 ; restore addrinfo pointer
-    push rsi                ; save it again
-    mov rsi, [rsi + 24]     ; ai_addr from addrinfo
-    mov rdx, [rsp]          ; get addrinfo back
-    mov edx, [rdx + 16]     ; ai_addrlen from addrinfo  
+    mov rsi, [r8 + 24]      ; ai_addr from addrinfo
+    mov edx, [r8 + 16]      ; ai_addrlen from addrinfo  
     syscall
 
     test rax, rax
@@ -563,12 +562,10 @@ resolve_and_connect:
     syscall
 
 .try_next_address:
-    pop rsi                 ; restore addrinfo pointer
-    mov rsi, [rsi + 32]     ; ai_next - move to next address
+    mov rsi, [r8 + 32]      ; ai_next - move to next address
     jmp .try_address
 
 .connection_success:
-    pop rsi                 ; clean up stack
     
     ; Free the addrinfo result
     push rbp
