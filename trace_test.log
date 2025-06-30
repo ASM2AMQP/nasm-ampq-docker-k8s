@@ -1,0 +1,2 @@
+execve("./amqp", ["./amqp", "-r"], 0x7ffd8e8171a8 /* 166 vars */) = -1 ENOENT (No such file or directory)
++++ exited with 1 +++

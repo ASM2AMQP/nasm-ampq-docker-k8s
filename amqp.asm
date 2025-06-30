@@ -549,19 +549,24 @@ resolve_and_connect:
     mov [sockfd], eax       ; save socket fd
 
     ; Connect using the sockaddr from addrinfo
+    ; Save r8 since syscalls can modify it
+    push r8
     mov rax, 42             ; sys_connect
     mov rdi, [sockfd]
     mov rsi, [r8 + 24]      ; ai_addr from addrinfo
     mov edx, [r8 + 16]      ; ai_addrlen from addrinfo  
     syscall
+    pop r8                  ; restore r8
 
     test rax, rax
     jns .connection_success ; Connection successful
 
     ; Close failed socket and try next address
+    push r8                 ; save r8 again
     mov rax, 3              ; sys_close
     mov rdi, [sockfd]
     syscall
+    pop r8                  ; restore r8
 
 .try_next_address:
     mov rsi, [r8 + 40]      ; ai_next - move to next address (fixed offset)
