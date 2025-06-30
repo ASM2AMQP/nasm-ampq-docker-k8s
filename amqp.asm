@@ -502,6 +502,9 @@ resolve_and_connect:
     test rdi, rdi
     jz dns_fail_handler
 
+    ; Save IP address pointer before we modify rdi
+    mov r8, rdi             ; save IP address pointer
+
     ; Setup sockaddr_in
     mov word [sockaddr], 2          ; AF_INET (little endian on x86)
     
@@ -521,7 +524,7 @@ resolve_and_connect:
     mov [sockaddr + 2], ax          ; port (big endian)
     
 .set_ip:
-    mov eax, [rdi]                  ; IP (already network order)
+    mov eax, [r8]                   ; IP (already network order) - use saved pointer
     mov [sockaddr + 4], eax
     mov qword [sockaddr + 8], 0     ; zero padding
 
