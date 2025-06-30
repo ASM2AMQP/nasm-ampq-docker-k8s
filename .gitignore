@@ -6,4 +6,4 @@ amqp
 *.tgz
 *.lock
 *.tar
-trace.log
+*.log
