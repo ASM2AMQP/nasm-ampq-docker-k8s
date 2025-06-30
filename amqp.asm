@@ -535,12 +535,14 @@ resolve_and_connect:
     ; Save current addrinfo pointer
     mov r8, rsi
 
-    ; Create socket with the address family from addrinfo
+    ; Create socket with the address family from addrinfo  
     mov rax, 41             ; sys_socket
     mov edi, [rsi + 4]      ; ai_family from addrinfo
+    push rsi                ; save addrinfo pointer before overwriting rsi
     mov rsi, 1              ; SOCK_STREAM
     mov rdx, 0              ; protocol
     syscall
+    pop rsi                 ; restore addrinfo pointer
 
     test rax, rax
     js .try_next_address    ; socket creation failed, try next
@@ -562,7 +564,7 @@ resolve_and_connect:
     syscall
 
 .try_next_address:
-    mov rsi, [r8 + 32]      ; ai_next - move to next address
+    mov rsi, [r8 + 40]      ; ai_next - move to next address (fixed offset)
     jmp .try_address
 
 .connection_success:
