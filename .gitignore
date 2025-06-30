@@ -6,3 +6,5 @@ amqp
 *.tgz
 *.lock
 *.tar
+test_host
+test_host.c
