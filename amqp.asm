@@ -258,6 +258,17 @@ section .data
     ; Offsets relative to frame start:
     body_size_offset      equ content_header_body_size_pos - content_header_frame
 
+    ; Addrinfo hints structure for getaddrinfo
+    addrinfo_hints:
+        dd 0                ; ai_flags
+        dd 0                ; ai_family (0 = AF_UNSPEC for dual-stack)
+        dd 1                ; ai_socktype (SOCK_STREAM)
+        dd 0                ; ai_protocol (0 = any)
+        dq 0                ; ai_addrlen (unused for hints)
+        dq 0                ; ai_addr (unused for hints)
+        dq 0                ; ai_canonname (unused for hints)
+        dq 0                ; ai_next (unused for hints)
+
     ;; ; Content Body Frame template in data segment
     ;; content_body_frame:
     ;;     db 3                  ; frame type body (3)
@@ -279,12 +290,13 @@ section .data
 	
 section .bss
     sockfd         resd 1
-    sockaddr       resb 16
+    sockaddr       resb 128        ; Increased size to accommodate both IPv4 and IPv6
     receive_buffer resb RECEIVE_BUFFER_SIZE
     frame_buffer   resb FRAME_BUFFER_SIZE
     input_buffer   resb INPUT_BUFFER_SIZE
     message_len    resd 1
     hex_out_buffer: resb 2049
+    addrinfo_result resq 1         ; Pointer to getaddrinfo result
     ;; hex_out_buffer: times 2048 db 0    ; Buffer for hex output (1024 bytes * 2 + null)
     ; Runtime configuration overrides
     runtime_username resb USERNAME_MAX
@@ -298,7 +310,8 @@ section .bss
 
 section .text
     global _start
-    extern gethostbyname
+    extern getaddrinfo
+    extern freeaddrinfo
 
 
 _start:
@@ -485,69 +498,87 @@ resolve_and_connect:
     mov rdi, host_str       ; use default if runtime_host is empty
 .use_runtime_host:
     
-    call gethostbyname
+    ; Prepare port string - use runtime port if provided, otherwise convert default
+    mov rsi, runtime_port
+    cmp byte [rsi], 0
+    jne .call_getaddrinfo
+    
+    ; Convert compile-time PORT to string for getaddrinfo
+    push rdi                ; save hostname
+    mov rdi, runtime_port   ; destination buffer
+    mov rax, PORT           ; port number
+    call int_to_string      ; convert to string
+    pop rdi                 ; restore hostname
+    mov rsi, runtime_port   ; use converted port string
+
+.call_getaddrinfo:
+    ; Call getaddrinfo(hostname, port_string, hints, &result)
+    ; rdi = hostname (already set)
+    ; rsi = port string (already set) 
+    mov rdx, addrinfo_hints
+    mov rcx, addrinfo_result
+    call getaddrinfo
 
     mov rsp, rbp
     pop rbp
 
     test rax, rax
-    jz dns_fail_handler
+    jnz dns_fail_handler    ; getaddrinfo returns 0 on success
 
-    ; Extract IP from hostent structure
-    mov rsi, rax
-    mov rdi, [rsi + 24]     ; h_addr_list
-    test rdi, rdi
-    jz dns_fail_handler
-    mov rdi, [rdi]          ; first address
-    test rdi, rdi
-    jz dns_fail_handler
+    ; Try each address until one connects
+    mov rsi, [addrinfo_result]  ; First addrinfo structure
 
-    ; Save IP address pointer before we modify rdi
-    mov r8, rdi             ; save IP address pointer
+.try_address:
+    test rsi, rsi
+    jz dns_fail_handler     ; No more addresses to try
 
-    ; Setup sockaddr_in
-    mov word [sockaddr], 2          ; AF_INET (little endian on x86)
-    
-    ; Set port - use runtime port if provided, otherwise use default
-    cmp byte [runtime_port], 0
-    je .use_default_port
-    ; Convert runtime_port string to integer
-    mov rdi, runtime_port
-    call string_to_int
-    ; Convert to network byte order
-    mov dx, ax
-    xchg dl, dh                     ; swap bytes for network order
-    mov [sockaddr + 2], dx
-    jmp .set_ip
-.use_default_port:
-    mov ax, [port_be]
-    mov [sockaddr + 2], ax          ; port (big endian)
-    
-.set_ip:
-    mov eax, [r8]                   ; IP (already network order) - use saved pointer
-    mov [sockaddr + 4], eax
-    mov qword [sockaddr + 8], 0     ; zero padding
-
-    ; Create socket
-    mov rax, 41                     ; sys_socket
-    mov rdi, 2                      ; AF_INET
-    mov rsi, 1                      ; SOCK_STREAM
-    mov rdx, 0                      ; protocol
+    ; Create socket with the address family from addrinfo
+    mov rax, 41             ; sys_socket
+    mov edi, [rsi + 4]      ; ai_family from addrinfo
+    push rsi                ; save addrinfo pointer
+    mov rsi, 1              ; SOCK_STREAM
+    mov rdx, 0              ; protocol
     syscall
 
     test rax, rax
-    js socket_fail_handler
-    mov [sockfd], eax
+    js .try_next_address    ; socket creation failed, try next
+    mov [sockfd], eax       ; save socket fd
 
-    ; Connect
-    mov rax, 42                     ; sys_connect
+    ; Connect using the sockaddr from addrinfo
+    mov rax, 42             ; sys_connect
     mov rdi, [sockfd]
-    lea rsi, [sockaddr]
-    mov rdx, 16
+    pop rsi                 ; restore addrinfo pointer
+    push rsi                ; save it again
+    mov rsi, [rsi + 24]     ; ai_addr from addrinfo
+    mov rdx, [rsp]          ; get addrinfo back
+    mov edx, [rdx + 16]     ; ai_addrlen from addrinfo  
     syscall
 
     test rax, rax
-    js connect_fail_handler
+    jns .connection_success ; Connection successful
+
+    ; Close failed socket and try next address
+    mov rax, 3              ; sys_close
+    mov rdi, [sockfd]
+    syscall
+
+.try_next_address:
+    pop rsi                 ; restore addrinfo pointer
+    mov rsi, [rsi + 32]     ; ai_next - move to next address
+    jmp .try_address
+
+.connection_success:
+    pop rsi                 ; clean up stack
+    
+    ; Free the addrinfo result
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    mov rdi, [addrinfo_result]
+    call freeaddrinfo
+    mov rsp, rbp
+    pop rbp
+    
     ret
 
 amqp_handshake:
