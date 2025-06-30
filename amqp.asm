@@ -804,7 +804,7 @@ build_connection_open_frame:
     cmp byte [rsi], 0
     jne .use_runtime_vhost
     mov rsi, vhost
-    mov cl, vhost_len
+    mov rcx, vhost_len
     jmp .copy_vhost
     
 .use_runtime_vhost:
