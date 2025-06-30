@@ -699,10 +699,7 @@ build_connection_start_ok_frame:
     
     ; Copy username
     mov rsi, runtime_username
-    mov rcx, rdx                ; reuse calculated length
-    sub rcx, 2                  ; subtract nulls, keep username+password
-    mov rax, rsi
-    call str_len                ; get actual username length in rcx
+    call str_len                ; get username length in rcx
 .copy_username:
     test rcx, rcx
     jz .username_done
@@ -719,7 +716,7 @@ build_connection_start_ok_frame:
     
     ; Copy password  
     mov rsi, runtime_password
-    call str_len
+    call str_len                ; get password length in rcx
 .copy_password:
     test rcx, rcx
     jz .password_done
