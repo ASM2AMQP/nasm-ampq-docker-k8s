@@ -1080,7 +1080,6 @@ build_queue_bind_frame:
 .copy_exchange:
     mov [rdi], cl               ; exchange name length
     inc rdi
-    movzx rcx, cl
     rep movsb                   ; copy exchange name
     
     ; Routing key - use runtime or default
@@ -1097,7 +1096,6 @@ build_queue_bind_frame:
 .copy_routing:
     mov [rdi], cl               ; routing key length
     inc rdi
-    movzx rcx, cl
     rep movsb                   ; copy routing key
     
     ; Nowait flag
@@ -1178,7 +1176,6 @@ build_basic_consume_frame:
 .copy_queue:
     mov [rdi], cl               ; queue name length
     inc rdi
-    movzx rcx, cl
     rep movsb                   ; copy queue name
     
     ; Consumer tag (empty)
@@ -1267,7 +1264,6 @@ build_basic_publish_frame:
 .copy_exchange:
     mov [rdi], cl               ; exchange name length
     inc rdi
-    movzx rcx, cl               ; ensure rcx contains only the length value
     rep movsb                   ; copy exchange name
     
     ; Routing key - use runtime or default
@@ -1284,7 +1280,6 @@ build_basic_publish_frame:
 .copy_routing:
     mov [rdi], cl               ; routing key length
     inc rdi
-    movzx rcx, cl
     rep movsb                   ; copy routing key
     
     ; Flags (mandatory=0, immediate=0)
