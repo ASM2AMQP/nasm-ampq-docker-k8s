@@ -7,4 +7,3 @@ amqp
 *.lock
 *.tar
 *.log
-amqp.asm.backup
