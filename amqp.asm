@@ -747,6 +747,7 @@ build_connection_start_ok_frame:
     sub rax, 8                  ; subtract frame header
     mov rsi, frame_buffer
     add rsi, 3
+    bswap eax
     mov [rsi], eax
     
     ; Return total frame size
@@ -827,7 +828,8 @@ build_connection_open_frame:
     sub rax, 8                  ; subtract frame header size  
     mov rsi, frame_buffer
     add rsi, 3
-    mov [rsi], eax              ; set payload size (big endian handled by hardware)
+    bswap eax                   ; convert to big endian
+    mov [rsi], eax              ; set payload size
     
     ; Return total frame size in eax
     mov rax, rdi
@@ -920,6 +922,7 @@ build_exchange_declare_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
+    bswap eax
     mov [rsi], eax
     
     ; Return total frame size
@@ -1000,6 +1003,7 @@ build_queue_declare_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
+    bswap eax
     mov [rsi], eax
     
     ; Return total frame size
@@ -1115,6 +1119,7 @@ build_queue_bind_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
+    bswap eax
     mov [rsi], eax
     
     ; Return total frame size
@@ -1200,6 +1205,7 @@ build_basic_consume_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
+    bswap eax
     mov [rsi], eax
     
     ; Return total frame size
@@ -1298,6 +1304,7 @@ build_basic_publish_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
+    bswap eax
     mov [rsi], eax
     
     ; Return total frame size
