@@ -24,7 +24,7 @@ case "$1" in
     ;;
   producer)
     echo "Running producer ..."
-    wait_for_the_slow_rabbit && while date; do sleep 1; done | /app/amqp -s
+    wait_for_the_slow_rabbit && while date; do sleep 1; done | ./amqp -s
     # Add producer-specific commands here
     ;;
   *)
