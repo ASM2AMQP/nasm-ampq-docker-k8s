@@ -121,7 +121,34 @@ section .data
     ; AMQP Protocol header
     amqp_header    db "AMQP", 0, 0, 9, 1
 
-    ; Frame construction utilities - all frames built dynamically on stack
+    ; Prebuilt AMQP frames with correct byte order
+
+    ; Connection.TuneOk Frame  
+    conn_tune_ok_frame:
+        db 1                       ; frame type
+        db 0, 0                    ; channel 0
+        db 0, 0, 0, (conn_tune_ok_payload_end - conn_tune_ok_payload) ; payload size
+    conn_tune_ok_payload:
+        db 0, 10, 0, 31            ; Connection.TuneOk (class 10, method 31)
+        db 0, 1                    ; channel max (0 = no limit)
+        db 0, 2, 0, 0              ; frame max 131072
+        db 0, 0                    ; heartbeat 0 (disabled)
+    conn_tune_ok_payload_end:
+        db 0xCE                    ; frame end
+
+    ; Channel.Open Frame
+    channel_open_frame:
+        db 1                       ; frame type
+        db 0, 1                    ; channel 1
+        db 0, 0, 0, (channel_open_payload_end - channel_open_payload) ; payload size
+    channel_open_payload:
+        db 0, 20, 0, 10            ; Channel.Open (class 20, method 10)
+        db 0                       ; reserved
+    channel_open_payload_end:
+        db 0xCE                    ; frame end
+
+
+
 
 
 
@@ -160,97 +187,27 @@ section .bss
     frame_buffer   resb FRAME_BUFFER_SIZE
     message_len    resd 1
     hex_out_buffer resb 2049
+    ; Runtime configuration overrides
+    runtime_username resb USERNAME_MAX
+    runtime_password resb PASSWORD_MAX
+    runtime_host     resb HOSTNAME_MAX
+    runtime_port     resb 8           ; port as string
+    runtime_vhost    resb VHOST_MAX
+    runtime_queuename resb QUEUENAME_MAX
+    runtime_exchange resb EXCHANGE_MAX
+    runtime_routingkey resb ROUTINGKEY_MAX
+    runtime_args_provided resb 1          ; flag: 1 if any runtime args provided, 0 for all defaults
 
 section .text
     global _start
     extern getaddrinfo
     extern freeaddrinfo
 
-; Frame construction utilities
-
-; Build Connection.TuneOk frame on stack
-; Input: RDI = destination buffer
-; Output: RAX = frame size
-build_connection_tune_ok_frame:
-    push rsi
-    push rcx
-    push rdx
-    
-    mov rsi, rdi                ; Save destination
-    
-    ; Frame header
-    mov byte [rdi], 1           ; frame type
-    inc rdi
-    mov word [rdi], 0           ; channel 0 (big endian)
-    add rdi, 2
-    mov dword [rdi], 0x0A000000 ; payload size 10 (big endian)
-    add rdi, 4
-    
-    ; Payload
-    mov dword [rdi], 0x1F000A00 ; Connection.TuneOk (class 10, method 31) big endian
-    add rdi, 4
-    mov word [rdi], 0x0100      ; channel max 1 (big endian)
-    add rdi, 2
-    mov dword [rdi], 0x00000200 ; frame max 131072 (big endian)
-    add rdi, 4
-    mov word [rdi], 0           ; heartbeat 0
-    add rdi, 2
-    
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate size
-    mov rax, rdi
-    sub rax, rsi
-    
-    pop rdx
-    pop rcx
-    pop rsi
-    ret
-
-; Build Channel.Open frame on stack
-; Input: RDI = destination buffer
-; Output: RAX = frame size
-build_channel_open_frame:
-    push rsi
-    push rcx
-    push rdx
-    
-    mov rsi, rdi                ; Save destination
-    
-    ; Frame header
-    mov byte [rdi], 1           ; frame type
-    inc rdi
-    mov word [rdi], 0x0100      ; channel 1 (big endian)
-    add rdi, 2
-    mov dword [rdi], 0x05000000 ; payload size 5 (big endian)
-    add rdi, 4
-    
-    ; Payload
-    mov dword [rdi], 0x0A001400 ; Channel.Open (class 20, method 10) big endian
-    add rdi, 4
-    mov byte [rdi], 0           ; reserved
-    inc rdi
-    
-    ; Frame end
-    mov byte [rdi], 0xCE
-    inc rdi
-    
-    ; Calculate size
-    mov rax, rdi
-    sub rax, rsi
-    
-    pop rdx
-    pop rcx
-    pop rsi
-    ret
-
+; Content header frame construction utility
 ; Build Content Header frame on stack  
 ; Input: RDI = destination buffer, RSI = message length
 ; Output: RAX = frame size
 build_content_header_frame:
-    push rsi
     push rcx
     push rdx
     push r8
@@ -294,7 +251,6 @@ build_content_header_frame:
     pop r8
     pop rdx
     pop rcx
-    pop rsi
     ret
 
 ; Helper function: Write 32-bit value in big endian at RDI
@@ -308,6 +264,58 @@ write_be32_at_rdi:
     shr eax, 8
     mov byte [rdi], al
     ret
+
+; Helper function: Copy string safely with length limit
+; Input: RDI = destination, RSI = source, RCX = max length
+copy_string_safe:
+    push rax
+    push rcx
+    push rsi
+    push rdi
+    
+.copy_loop:
+    test rcx, rcx
+    jz .done
+    mov al, [rsi]
+    mov [rdi], al
+    test al, al                 ; Check for null terminator
+    jz .done
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .copy_loop
+.done:
+    ; Ensure null termination
+    mov byte [rdi], 0
+    
+    pop rdi
+    pop rsi
+    pop rcx
+    pop rax
+    ret
+
+; Helper function: Clear memory for security
+; Input: RDI = memory address, RCX = length
+clear_memory:
+    push rax
+    push rcx
+    push rdi
+    
+    xor eax, eax                ; Clear with zeros
+.clear_loop:
+    test rcx, rcx
+    jz .clear_done
+    mov [rdi], al
+    inc rdi
+    dec rcx
+    jmp .clear_loop
+.clear_done:
+    
+    pop rdi
+    pop rcx
+    pop rax
+    ret
+
 
 _start:
     ; Check arguments - at least mode required
@@ -674,19 +682,54 @@ send_amqp_header:
 
 
 send_connection_start_ok:
-    ; Always build dynamic frame with runtime credentials
+    ; Allocate username and password on stack
+    sub rsp, USERNAME_MAX + PASSWORD_MAX
+    
+    ; Copy username to stack
+    mov rdi, rsp                    ; Stack username buffer
+    mov rsi, runtime_username       ; Source
+    mov rcx, USERNAME_MAX
+    call copy_string_safe
+    
+    ; Copy password to stack  
+    mov rdi, rsp
+    add rdi, USERNAME_MAX           ; Stack password buffer
+    mov rsi, runtime_password       ; Source
+    mov rcx, PASSWORD_MAX
+    call copy_string_safe
+    
+    ; Build frame with stack-based credentials
+    mov rdi, frame_buffer           ; Destination buffer
+    mov rsi, rsp                    ; Username on stack
+    mov rdx, rsp
+    add rdx, USERNAME_MAX           ; Password on stack
     call build_connection_start_ok_frame
+    
+    ; Clear password from stack for security
+    mov rdi, rsp
+    add rdi, USERNAME_MAX
+    mov rcx, PASSWORD_MAX
+    call clear_memory
+    
+    ; Send frame
     mov rdi, frame_buffer
-    mov edx, eax                ; frame size returned in eax
+    mov edx, eax                    ; frame size returned in eax
     call send_frame
+    
+    add rsp, USERNAME_MAX + PASSWORD_MAX
     ret
 
 ; Build Connection.StartOk frame with runtime credentials
+; Input: RDI = destination buffer, RSI = username buffer, RDX = password buffer
+; Output: RAX = frame size
 build_connection_start_ok_frame:
-    push rsi
-    push rdi
     push rcx
-    push rdx
+    push r8
+    push r9
+    push r10
+    
+    mov r8, rsi                 ; Save username pointer
+    mov r9, rdx                 ; Save password pointer
     
     mov rdi, frame_buffer
     
@@ -717,11 +760,11 @@ build_connection_start_ok_frame:
     
     ; Response (SASL authentication)
     ; Calculate total auth string length: 1 + username_len + 1 + password_len
-    mov rsi, runtime_username
+    mov rsi, r8                 ; username
     call str_len
     mov rdx, rcx                ; username length
     
-    mov rsi, runtime_password
+    mov rsi, r9                 ; password
     call str_len                ; password length in rcx
     
     add rdx, rcx                ; username + password lengths
@@ -738,7 +781,7 @@ build_connection_start_ok_frame:
     inc rdi
     
     ; Copy username
-    mov rsi, runtime_username
+    mov rsi, r8                 ; username buffer
     call str_len                ; get username length in rcx
 .copy_username:
     test rcx, rcx
@@ -755,7 +798,7 @@ build_connection_start_ok_frame:
     inc rdi
     
     ; Copy password  
-    mov rsi, runtime_password
+    mov rsi, r9                 ; password buffer
     call str_len                ; get password length in rcx
 .copy_password:
     test rcx, rcx
@@ -792,21 +835,16 @@ build_connection_start_ok_frame:
     mov rax, rdi
     sub rax, frame_buffer
     
-    pop rdx
+    pop r10
+    pop r9
+    pop r8
     pop rcx
-    pop rdi
-    pop rsi
     ret
 
 send_connection_tune_ok:
-    ; Allocate frame on stack
-    sub rsp, 32                 ; Allocate space for frame
-    mov rdi, rsp                ; Use stack space as buffer
-    call build_connection_tune_ok_frame
-    mov rdx, rax                ; Frame size
-    mov rdi, rsp                ; Frame buffer
+    mov rdi, conn_tune_ok_frame
+    mov rdx, (conn_tune_ok_payload_end - conn_tune_ok_frame + 1)
     call send_frame
-    add rsp, 32                 ; Restore stack
     ret
 
 send_connection_open:
@@ -883,14 +921,9 @@ build_connection_open_frame:
     ret
 
 open_channel:
-    ; Allocate frame on stack
-    sub rsp, 32                 ; Allocate space for frame
-    mov rdi, rsp                ; Use stack space as buffer
-    call build_channel_open_frame
-    mov rdx, rax                ; Frame size
-    mov rdi, rsp                ; Frame buffer
+    mov rdi, channel_open_frame
+    mov rdx, (channel_open_payload_end - channel_open_frame + 1)
     call send_frame
-    add rsp, 32                 ; Restore stack
     call receive_frame
     ret
 
