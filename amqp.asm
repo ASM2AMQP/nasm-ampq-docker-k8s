@@ -45,16 +45,18 @@ SOCK_STREAM     equ 1       ; TCP stream socket
 
 ; Structure definition for addrinfo hints
 struc hints_t
-    .ai_flags    resq 1      ; int, usually 4 bytes but qword for alignment
-    .ai_family   resq 1
-    .ai_socktype resq 1
-    .ai_protocol resq 1
-    ; no need for ai_addr, ai_canonname, ai_next here
-    ; add padding if you want 32 bytes aligned or so
+    .ai_flags    resd 1      ; int, 4 bytes
+    .ai_family   resd 1      ; int, 4 bytes
+    .ai_socktype resd 1      ; int, 4 bytes
+    .ai_protocol resd 1      ; int, 4 bytes
+    .ai_addrlen  resd 1      ; socklen_t, 4 bytes  
+    .ai_addr     resq 1      ; pointer, 8 bytes
+    .ai_canonname resq 1     ; pointer, 8 bytes
+    .ai_next     resq 1      ; pointer, 8 bytes
 endstruc
 
-; Size of the hints structure
-hints_t_size equ 32
+; Size of the hints structure (must match actual struct size)
+addrinfo_hints_size equ 40
 
 section .data
     ; String values
@@ -200,9 +202,8 @@ section .bss
     frame_buffer   resb FRAME_BUFFER_SIZE
     input_buffer   resb INPUT_BUFFER_SIZE
     message_len    resd 1
-    hex_out_buffer: resb 2049
+    hex_out_buffer resb 2049
     addrinfo_result resq 1         ; Pointer to getaddrinfo result
-    ;; hex_out_buffer: times 2048 db 0    ; Buffer for hex output (1024 bytes * 2 + null)
     ; Runtime configuration overrides
     runtime_username resb USERNAME_MAX
     runtime_password resb PASSWORD_MAX
@@ -405,14 +406,23 @@ resolve_and_connect:
     mov rbp, rsp
     and rsp, -16
     
-    ; Allocate hints structure on stack
-    sub rsp, hints_t_size
+    ; Allocate space for hints structure on stack
+    sub rsp, addrinfo_hints_size
     
-    ; Initialize hints structure on stack
-    mov qword [rsp + hints_t.ai_flags], 0          ; ai_flags = 0
-    mov qword [rsp + hints_t.ai_family], AF_UNSPEC ; ai_family = AF_UNSPEC (IPv4 or IPv6)
-    mov qword [rsp + hints_t.ai_socktype], SOCK_STREAM ; ai_socktype = SOCK_STREAM (TCP)
-    mov qword [rsp + hints_t.ai_protocol], 0       ; ai_protocol = 0 (any)
+    ; Initialize hints structure on stack (zero the whole structure first)
+    push rdi
+    mov rdi, rsp
+    add rdi, 8          ; account for saved rdi
+    mov rcx, addrinfo_hints_size
+    xor rax, rax
+    rep stosb
+    pop rdi
+    
+    ; Set the fields we need
+    mov dword [rsp + hints_t.ai_flags], 0          ; ai_flags = 0
+    mov dword [rsp + hints_t.ai_family], AF_UNSPEC ; ai_family = AF_UNSPEC (IPv4 or IPv6)
+    mov dword [rsp + hints_t.ai_socktype], SOCK_STREAM ; ai_socktype = SOCK_STREAM (TCP)
+    mov dword [rsp + hints_t.ai_protocol], 0       ; ai_protocol = 0 (any)
 
     ; Use runtime_host if set, otherwise use default host_str
     mov rdi, runtime_host
