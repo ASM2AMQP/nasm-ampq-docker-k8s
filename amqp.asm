@@ -639,8 +639,11 @@ build_connection_start_ok_frame:
     
     ; Write auth string length as 4-byte big endian
     mov eax, edx
-    bswap eax
-    mov [rdi], eax              ; auth string length (4 bytes big endian)
+    ; Convert to big endian: store bytes in network order
+    mov [rdi], byte 0           ; bits 31-24
+    mov [rdi+1], byte 0         ; bits 23-16  
+    mov [rdi+2], byte 0         ; bits 15-8
+    mov [rdi+3], dl             ; bits 7-0 (length)
     add rdi, 4
     
     ; Auth string format: \0username\0password
