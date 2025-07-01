@@ -1304,11 +1304,11 @@ wait_loop:
     jne wait_loop
 
     mov ax, [receive_buffer + 7]
-    cmp ax, 0x003C                  ; Basic class (big endian)
+    cmp ax, 0x3C00                  ; Basic class (60 in network byte order read as little endian)
     jne wait_loop
 
     mov ax, [receive_buffer + 9]
-    cmp ax, 0x003C                  ; Deliver method (big endian)
+    cmp ax, 0x3C00                  ; Deliver method (60 in network byte order read as little endian)
     jne wait_loop
 
     ; Receive content header and body
