@@ -517,13 +517,9 @@ resolve_and_connect:
 
 .connection_success:
     ; Free the addrinfo result and clean up stack
-    push rbp
-    mov rbp, rsp
-    and rsp, -16
-    mov rdi, [rbp - addrinfo_hints_size - 8]  ; Load addrinfo result pointer from original stack position
+    ; addrinfo result pointer is at [rsp + addrinfo_hints_size]
+    mov rdi, [rsp + addrinfo_hints_size]
     call freeaddrinfo
-    mov rsp, rbp
-    pop rbp
     
     ; Restore original stack pointer and return
     mov rsp, rbp
@@ -538,13 +534,9 @@ resolve_and_connect:
 
 .cleanup_and_connect_fail:
     ; Free addrinfo and jump to connect failure handler
-    push rbp
-    mov rbp, rsp
-    and rsp, -16
-    mov rdi, [rbp - addrinfo_hints_size - 8]  ; Load addrinfo result pointer from original stack position
+    ; addrinfo result pointer is at [rsp + addrinfo_hints_size]
+    mov rdi, [rsp + addrinfo_hints_size]
     call freeaddrinfo
-    mov rsp, rbp
-    pop rbp
     
     ; Restore original stack pointer and jump to failure handler
     mov rsp, rbp
