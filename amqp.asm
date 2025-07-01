@@ -617,9 +617,9 @@ build_connection_start_ok_frame:
     mov dword [rdi], 0
     add rdi, 4
     
-    ; Mechanism (PLAIN)
-    mov dword [rdi], 0x05000000 ; length 5 in big endian (4 bytes)
-    add rdi, 4
+    ; Mechanism (PLAIN) - shortstr format: 1 byte length + string
+    mov byte [rdi], 5           ; length 5 (1 byte for shortstr)
+    inc rdi
     mov dword [rdi], 'PLAI'     ; First 4 chars: P,L,A,I
     add rdi, 4
     mov byte [rdi], 'N'         ; Last char: N
@@ -678,9 +678,9 @@ build_connection_start_ok_frame:
     jmp .copy_password
 .password_done:
     
-    ; Locale
-    mov dword [rdi], 0x05000000 ; length 5 in big endian (4 bytes)
-    add rdi, 4
+    ; Locale - shortstr format: 1 byte length + string
+    mov byte [rdi], 5           ; length 5 (1 byte for shortstr)
+    inc rdi
     mov dword [rdi], 'en_U'     ; First 4 chars
     add rdi, 4
     mov byte [rdi], 'S'         ; Last char
