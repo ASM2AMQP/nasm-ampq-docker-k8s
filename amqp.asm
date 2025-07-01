@@ -660,9 +660,9 @@ build_connection_start_ok_frame:
     add rdi, 4                  ; skip payload size for now
     
     ; Method header
-    mov word [rdi], 0x000A      ; class 10 (Connection)
+    mov word [rdi], 0x0A00      ; class 10 (Connection) - big endian
     add rdi, 2
-    mov word [rdi], 0x000B      ; method 11 (StartOk)
+    mov word [rdi], 0x0B00      ; method 11 (StartOk) - big endian
     add rdi, 2
     
     ; Client properties table (empty for simplicity)
@@ -792,9 +792,9 @@ build_connection_open_frame:
     add rdi, 4
     
     ; Method header
-    mov word [rdi], 0x000A      ; class 10 (Connection)
+    mov word [rdi], 0x0A00      ; class 10 (Connection) - big endian
     add rdi, 2
-    mov word [rdi], 0x0028      ; method 40 (Open)  
+    mov word [rdi], 0x2800      ; method 40 (Open) - big endian  
     add rdi, 2
     
     ; Virtual host - use runtime or default
@@ -866,14 +866,14 @@ build_exchange_declare_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 1           ; channel 1
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x0028      ; class 40 (Exchange)
+    mov word [rdi], 0x2800      ; class 40 (Exchange) - big endian
     add rdi, 2
-    mov word [rdi], 0x000A      ; method 10 (Declare)
+    mov word [rdi], 0x0A00      ; method 10 (Declare) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -954,14 +954,14 @@ build_queue_declare_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 1           ; channel 1
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header  
-    mov word [rdi], 0x0032      ; class 50 (Queue)
+    mov word [rdi], 0x3200      ; class 50 (Queue) - big endian
     add rdi, 2
-    mov word [rdi], 0x000A      ; method 10 (Declare)
+    mov word [rdi], 0x0A00      ; method 10 (Declare) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1036,14 +1036,14 @@ build_queue_bind_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 1           ; channel 1
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x0032      ; class 50 (Queue)
+    mov word [rdi], 0x3200      ; class 50 (Queue) - big endian
     add rdi, 2
-    mov word [rdi], 0x0014      ; method 20 (Bind)
+    mov word [rdi], 0x1400      ; method 20 (Bind) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1152,14 +1152,14 @@ build_basic_consume_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 1           ; channel 1
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x003C      ; class 60 (Basic)
+    mov word [rdi], 0x3C00      ; class 60 (Basic) - big endian
     add rdi, 2
-    mov word [rdi], 0x0014      ; method 20 (Consume)
+    mov word [rdi], 0x1400      ; method 20 (Consume) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1242,14 +1242,14 @@ build_basic_publish_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 1           ; channel 1
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x003C      ; class 60 (Basic)
+    mov word [rdi], 0x3C00      ; class 60 (Basic) - big endian
     add rdi, 2
-    mov word [rdi], 0x0028      ; method 40 (Publish)
+    mov word [rdi], 0x2800      ; method 40 (Publish) - big endian
     add rdi, 2
     
     ; Reserved short
