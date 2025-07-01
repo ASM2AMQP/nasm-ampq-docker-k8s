@@ -157,7 +157,6 @@ section .bss
     runtime_queuename resb QUEUENAME_MAX
     runtime_exchange resb EXCHANGE_MAX
     runtime_routingkey resb ROUTINGKEY_MAX
-    runtime_args_provided resb 1          ; flag: 1 if any runtime args provided, 0 for all defaults
 
 section .text
     global _start
@@ -721,8 +720,8 @@ send_amqp_header:
 
 
 send_connection_start_ok:
-    ; Allocate username and password on stack
-    sub rsp, USERNAME_MAX + PASSWORD_MAX
+    ; Allocate username, password, and frame buffer on stack
+    sub rsp, USERNAME_MAX + PASSWORD_MAX + FRAME_BUFFER_SIZE
     
     ; Copy username to stack
     mov rdi, rsp                    ; Stack username buffer
@@ -737,8 +736,9 @@ send_connection_start_ok:
     mov rcx, PASSWORD_MAX
     call copy_string_safe
     
-    ; Build frame with stack-based credentials
-    mov rdi, frame_buffer           ; Destination buffer
+    ; Build frame with stack-based credentials and frame buffer
+    mov rdi, rsp
+    add rdi, USERNAME_MAX + PASSWORD_MAX  ; Stack frame buffer
     mov rsi, rsp                    ; Username on stack
     mov rdx, rsp
     add rdx, USERNAME_MAX           ; Password on stack
@@ -751,11 +751,12 @@ send_connection_start_ok:
     call clear_memory
     
     ; Send frame
-    mov rdi, frame_buffer
+    mov rdi, rsp
+    add rdi, USERNAME_MAX + PASSWORD_MAX  ; Stack frame buffer
     mov edx, eax                    ; frame size returned in eax
     call send_frame
     
-    add rsp, USERNAME_MAX + PASSWORD_MAX
+    add rsp, USERNAME_MAX + PASSWORD_MAX + FRAME_BUFFER_SIZE
     ret
 
 ; Build Connection.StartOk frame with runtime credentials
@@ -769,8 +770,7 @@ build_connection_start_ok_frame:
     
     mov r8, rsi                 ; Save username pointer
     mov r9, rdx                 ; Save password pointer
-    
-    mov rdi, frame_buffer
+    mov r10, rdi                ; Save destination buffer pointer
     
     ; Frame header
     mov byte [rdi], 1           ; frame type
@@ -864,15 +864,15 @@ build_connection_start_ok_frame:
     
     ; Calculate and set payload size
     mov rax, rdi
-    sub rax, frame_buffer
+    sub rax, r10                ; Subtract frame start (destination buffer)
     sub rax, 8                  ; subtract frame header
-    mov rsi, frame_buffer
-    add rsi, 3
+    mov rsi, r10                ; Frame start
+    add rsi, 3                  ; Payload size location
     call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
-    sub rax, frame_buffer
+    sub rax, r10                ; Subtract frame start (destination buffer)
     
     pop r10
     pop r9
@@ -1814,9 +1814,6 @@ init_runtime_defaults:
     push rcx
     push rax
     
-    ; Initialize flag to indicate no runtime args provided yet
-    mov byte [runtime_args_provided], 0
-    
     ; Initialize username with default
     mov rsi, username
     mov rdi, runtime_username
@@ -1928,9 +1925,6 @@ copy_argument:
     jz .done
     cmp byte [rsi], 0
     je .done
-    
-    ; Mark that runtime arguments were provided
-    mov byte [runtime_args_provided], 1
     
     ; Copy argument to buffer
     dec rcx                     ; leave space for null terminator
