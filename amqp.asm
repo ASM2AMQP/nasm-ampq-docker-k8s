@@ -320,11 +320,14 @@ _start:
     call copy_argument
 
 .check_password:
-    ; If username was provided as argument, prompt for password
+    ; If username was provided as argument AND is not empty, prompt for password
     ; Check if argc >= 3 (meaning username argument was provided)
     mov rbx, [rsp]              ; argc
     cmp rbx, 3
     jl .init_port_default
+    ; Also check if username is not empty
+    cmp byte [runtime_username], 0
+    je .init_port_default
     call prompt_password
 
 .init_port_default:
@@ -605,9 +608,9 @@ build_connection_start_ok_frame:
     add rdi, 4                  ; skip payload size for now
     
     ; Method header
-    mov word [rdi], 0x000A      ; class 10 (Connection) - big endian
+    mov word [rdi], 0x0A00      ; class 10 (Connection) - big endian
     add rdi, 2
-    mov word [rdi], 0x000B      ; method 11 (StartOk) - big endian
+    mov word [rdi], 0x0B00      ; method 11 (StartOk) - big endian
     add rdi, 2
     
     ; Client properties table (empty for simplicity)
@@ -615,8 +618,8 @@ build_connection_start_ok_frame:
     add rdi, 4
     
     ; Mechanism (PLAIN)
-    mov byte [rdi], 5           ; length
-    inc rdi
+    mov dword [rdi], 0x05000000 ; length 5 in big endian (4 bytes)
+    add rdi, 4
     mov dword [rdi], 'PLAI'     ; First 4 chars: P,L,A,I
     add rdi, 4
     mov byte [rdi], 'N'         ; Last char: N
@@ -634,8 +637,11 @@ build_connection_start_ok_frame:
     add rdx, rcx                ; username + password lengths
     add rdx, 2                  ; + 2 null separators
     
-    mov [rdi], dl               ; auth string length
-    inc rdi
+    ; Write auth string length as 4-byte big endian
+    mov eax, edx
+    bswap eax
+    mov [rdi], eax              ; auth string length (4 bytes big endian)
+    add rdi, 4
     
     ; Auth string format: \0username\0password
     mov byte [rdi], 0           ; first null
@@ -673,8 +679,8 @@ build_connection_start_ok_frame:
 .password_done:
     
     ; Locale
-    mov byte [rdi], 5           ; length
-    inc rdi
+    mov dword [rdi], 0x05000000 ; length 5 in big endian (4 bytes)
+    add rdi, 4
     mov dword [rdi], 'en_U'     ; First 4 chars
     add rdi, 4
     mov byte [rdi], 'S'         ; Last char
@@ -735,9 +741,9 @@ build_connection_open_frame:
     add rdi, 4
     
     ; Method header
-    mov word [rdi], 0x000A      ; class 10 (Connection) - big endian
+    mov word [rdi], 0x0A00      ; class 10 (Connection) - big endian
     add rdi, 2
-    mov word [rdi], 0x0028      ; method 40 (Open) - big endian
+    mov word [rdi], 0x2800      ; method 40 (Open) - big endian
     add rdi, 2
     
     ; Virtual host - use runtime or default
@@ -809,14 +815,14 @@ build_exchange_declare_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0001      ; channel 1 - big endian
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x0028      ; class 40 (Exchange) - big endian
+    mov word [rdi], 0x2800      ; class 40 (Exchange) - big endian
     add rdi, 2
-    mov word [rdi], 0x000A      ; method 10 (Declare) - big endian
+    mov word [rdi], 0x0A00      ; method 10 (Declare) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -897,14 +903,14 @@ build_queue_declare_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0001      ; channel 1 - big endian
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
-    ; Method header  
-    mov word [rdi], 0x0032      ; class 50 (Queue) - big endian
+    ; Method header
+    mov word [rdi], 0x3200      ; class 50 (Queue) - big endian
     add rdi, 2
-    mov word [rdi], 0x000A      ; method 10 (Declare) - big endian
+    mov word [rdi], 0x0A00      ; method 10 (Declare) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -979,14 +985,14 @@ build_queue_bind_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0001      ; channel 1 - big endian
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x0032      ; class 50 (Queue) - big endian
+    mov word [rdi], 0x3200      ; class 50 (Queue) - big endian
     add rdi, 2
-    mov word [rdi], 0x0014      ; method 20 (Bind) - big endian
+    mov word [rdi], 0x1400      ; method 20 (Bind) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1095,14 +1101,14 @@ build_basic_consume_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0001      ; channel 1 - big endian
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x003C      ; class 60 (Basic) - big endian
+    mov word [rdi], 0x3C00      ; class 60 (Basic) - big endian
     add rdi, 2
-    mov word [rdi], 0x0014      ; method 20 (Consume) - big endian
+    mov word [rdi], 0x1400      ; method 20 (Consume) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1185,14 +1191,14 @@ build_basic_publish_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0001      ; channel 1 - big endian
+    mov word [rdi], 0x0100      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x003C      ; class 60 (Basic) - big endian
+    mov word [rdi], 0x3C00      ; class 60 (Basic) - big endian
     add rdi, 2
-    mov word [rdi], 0x0028      ; method 40 (Publish) - big endian
+    mov word [rdi], 0x2800      ; method 40 (Publish) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1294,7 +1300,7 @@ send_content_body:
     ; Build AMQP body frame
     lea rdi, [frame_buffer]
     mov byte [rdi], 3               ; body frame type
-    mov word [rdi + 1], 0x0001      ; channel 1 (big endian)
+    mov word [rdi + 1], 0x0100      ; channel 1 (big endian)
     ; Frame size (big endian)
     mov eax, [message_len]
     cmp eax, FRAME_BUFFER_SIZE - 8
