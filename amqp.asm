@@ -121,31 +121,7 @@ section .data
     ; AMQP Protocol header
     amqp_header    db "AMQP", 0, 0, 9, 1
 
-    ; Prebuilt AMQP frames with correct byte order
-
-    ; Connection.TuneOk Frame  
-    conn_tune_ok_frame:
-        db 1                       ; frame type
-        db 0, 0                    ; channel 0
-        db 0, 0, 0, (conn_tune_ok_payload_end - conn_tune_ok_payload) ; payload size
-    conn_tune_ok_payload:
-        db 0, 10, 0, 31            ; Connection.TuneOk (class 10, method 31)
-        db 0, 1                    ; channel max (0 = no limit)
-        db 0, 2, 0, 0              ; frame max 131072
-        db 0, 0                    ; heartbeat 0 (disabled)
-    conn_tune_ok_payload_end:
-        db 0xCE                    ; frame end
-
-    ; Channel.Open Frame
-    channel_open_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (channel_open_payload_end - channel_open_payload) ; payload size
-    channel_open_payload:
-        db 0, 20, 0, 10            ; Channel.Open (class 20, method 10)
-        db 0                       ; reserved
-    channel_open_payload_end:
-        db 0xCE                    ; frame end
+    ; Frame construction utilities - all frames built dynamically
 
 
 
@@ -159,27 +135,12 @@ section .data
 
 
 
-
-
-    ;; ; Content Body Frame template in data segment
-    ;; content_body_frame:
-    ;;     db 3                  ; frame type body (3)
-    ;;     db 0, 1                  ; Channel ID: 1
-    ;; content_body_message_size:
-    ;;     dd 0                       ; placeholder for message size (uint32 BE)
-    ;; content_body_payload:
-    ;; content_body_payload_end:
-    ;;     db 0xCE               ; Frame end
-
-    ;; ; Offsets relative to frame start:
-    ;; message_size_offset      equ content_body_message_size - content_body_frame
-    ;; message_payload_offset      equ content_body_payload - content_body_frame
 
 
 %define RECEIVE_BUFFER_SIZE 4096
 %define FRAME_BUFFER_SIZE 512
 %define INPUT_BUFFER_SIZE 512
-	
+
 section .bss
     sockfd         resd 1
     sockaddr       resb 128        ; Increased size to accommodate both IPv4 and IPv6
@@ -251,6 +212,84 @@ build_content_header_frame:
     pop r8
     pop rdx
     pop rcx
+    ret
+
+; Build Connection.TuneOk frame on stack
+; Input: RDI = destination buffer
+; Output: RAX = frame size
+build_connection_tune_ok_frame:
+    push rsi
+    push rcx
+    push rdx
+    
+    mov rsi, rdi                ; Save destination
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 0           ; channel 0 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x0A000000 ; payload size 10 (big endian)
+    add rdi, 4
+    
+    ; Payload
+    mov dword [rdi], 0x1F000A00 ; Connection.TuneOk (class 10, method 31) big endian
+    add rdi, 4
+    mov word [rdi], 0x0100      ; channel max 1 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x00000200 ; frame max 131072 (big endian)
+    add rdi, 4
+    mov word [rdi], 0           ; heartbeat 0
+    add rdi, 2
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate size
+    mov rax, rdi
+    sub rax, rsi
+    
+    pop rdx
+    pop rcx
+    pop rsi
+    ret
+
+; Build Channel.Open frame on stack
+; Input: RDI = destination buffer
+; Output: RAX = frame size
+build_channel_open_frame:
+    push rsi
+    push rcx
+    push rdx
+    
+    mov rsi, rdi                ; Save destination
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 0x0100      ; channel 1 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x05000000 ; payload size 5 (big endian)
+    add rdi, 4
+    
+    ; Payload
+    mov dword [rdi], 0x0A001400 ; Channel.Open (class 20, method 10) big endian
+    add rdi, 4
+    mov byte [rdi], 0           ; reserved
+    inc rdi
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate size
+    mov rax, rdi
+    sub rax, rsi
+    
+    pop rdx
+    pop rcx
+    pop rsi
     ret
 
 ; Helper function: Write 32-bit value in big endian at RDI
@@ -842,9 +881,14 @@ build_connection_start_ok_frame:
     ret
 
 send_connection_tune_ok:
-    mov rdi, conn_tune_ok_frame
-    mov rdx, (conn_tune_ok_payload_end - conn_tune_ok_frame + 1)
+    ; Allocate frame on stack
+    sub rsp, 32                 ; Allocate space for frame
+    mov rdi, rsp                ; Use stack space as buffer
+    call build_connection_tune_ok_frame
+    mov rdx, rax                ; Frame size
+    mov rdi, rsp                ; Frame buffer
     call send_frame
+    add rsp, 32                 ; Restore stack
     ret
 
 send_connection_open:
@@ -921,9 +965,14 @@ build_connection_open_frame:
     ret
 
 open_channel:
-    mov rdi, channel_open_frame
-    mov rdx, (channel_open_payload_end - channel_open_frame + 1)
+    ; Allocate frame on stack
+    sub rsp, 32                 ; Allocate space for frame
+    mov rdi, rsp                ; Use stack space as buffer
+    call build_channel_open_frame
+    mov rdx, rax                ; Frame size
+    mov rdi, rsp                ; Frame buffer
     call send_frame
+    add rsp, 32                 ; Restore stack
     call receive_frame
     ret
 
