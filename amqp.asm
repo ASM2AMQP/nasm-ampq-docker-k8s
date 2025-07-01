@@ -39,6 +39,19 @@ EXCHANGE_MAX    equ 256
 VHOST_MAX       equ 128
 ROUTINGKEY_MAX  equ 256
 
+; Structure definition for addrinfo hints
+struc hints_t
+    .ai_flags    resq 1      ; int, usually 4 bytes but qword for alignment
+    .ai_family   resq 1
+    .ai_socktype resq 1
+    .ai_protocol resq 1
+    ; no need for ai_addr, ai_canonname, ai_next here
+    ; add padding if you want 32 bytes aligned or so
+endstruc
+
+; Size of the hints structure
+hints_t_size equ 32
+
 section .data
     ; String values
     username       db USERNAME
@@ -159,87 +172,15 @@ section .data
     channel_open_payload_end:
         db 0xCE                    ; frame end
 
-    ; Exchange.Declare Frame
-    exchange_declare_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (exchange_declare_payload_end - exchange_declare_payload) ; payload size
-    exchange_declare_payload:
-        db 0, 40, 0, 10            ; Exchange.Declare (class 40, method 10)
-        db 0, 0                    ; reserved
-        db exchange_len            ; exchange name length
-        db EXCHANGE                ; exchange name
-        db 5, "topic"              ; exchange type (length + string)
-        db 0b00000010              ; flags: durable=1
-        db 0, 0, 0, 0              ; arguments (empty table)
-    exchange_declare_payload_end:
-        db 0xCE                    ; frame end
 
-    ; Queue.Declare Frame
-    queue_declare_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (queue_declare_payload_end - queue_declare_payload) ; payload size
-    queue_declare_payload:
-        db 0, 50, 0, 10            ; Queue.Declare (class 50, method 10)
-        db 0, 0                    ; reserved
-        db queue_name_len          ; queue name length
-        db QUEUENAME               ; queue name
-        db 0                       ; flags: not durable, not exclusive, not auto-delete
-        db 0, 0, 0, 0              ; arguments (empty table)
-    queue_declare_payload_end:
-        db 0xCE                    ; frame end
 
-    ; Queue.Bind Frame
-    queue_bind_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (queue_bind_payload_end - queue_bind_payload) ; payload size
-    queue_bind_payload:
-        db 0, 50, 0, 20            ; Queue.Bind (class 50, method 20)
-        db 0, 0                    ; reserved
-        db queue_name_len          ; queue name length
-        db QUEUENAME               ; queue name
-        db exchange_len            ; exchange name length
-        db EXCHANGE                ; exchange name
-        db routing_key_len         ; routing key length
-        db ROUTINGKEY              ; routing key
-        db 0                       ; nowait flag
-        db 0, 0, 0, 0              ; arguments (empty table)
-    queue_bind_payload_end:
-        db 0xCE                    ; frame end
 
-    ; Basic.Consume Frame
-    basic_consume_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (basic_consume_payload_end - basic_consume_payload) ; payload size
-    basic_consume_payload:
-        db 0, 60, 0, 20            ; Basic.Consume (class 60, method 20)
-        db 0, 0                    ; reserved
-        db queue_name_len          ; queue name length
-        db QUEUENAME               ; queue name
-        db 0                       ; consumer tag length (auto-generated)
-        db 0b00000010              ; flags: no_ack=1
-        db 0, 0, 0, 0              ; arguments (empty table)
-    basic_consume_payload_end:
-        db 0xCE                    ; frame end
 
-    ; Basic.Publish Frame
-    basic_publish_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (basic_publish_payload_end - basic_publish_payload) ; payload size
-    basic_publish_payload:
-        db 0, 60, 0, 40            ; Basic.Publish (class 60, method 40)
-        db 0, 0                    ; reserved
-        db exchange_len            ; exchange name length
-        db EXCHANGE                ; exchange name
-        db routing_key_len         ; routing key length
-        db ROUTINGKEY              ; routing key
-        db 0                       ; flags: not mandatory, not immediate
-    basic_publish_payload_end:
-        db 0xCE                    ; frame end
+
+
+
+
+
 
     ; Content Header Frame template in data segment
     content_header_frame:
@@ -257,17 +198,6 @@ section .data
 
     ; Offsets relative to frame start:
     body_size_offset      equ content_header_body_size_pos - content_header_frame
-
-    ; Addrinfo hints structure for getaddrinfo
-    addrinfo_hints:
-        dd 0                ; ai_flags
-        dd 0                ; ai_family (0 = AF_UNSPEC for dual-stack)
-        dd 1                ; ai_socktype (SOCK_STREAM)
-        dd 0                ; ai_protocol (0 = any)
-        dq 0                ; ai_addrlen (unused for hints)
-        dq 0                ; ai_addr (unused for hints)
-        dq 0                ; ai_canonname (unused for hints)
-        dq 0                ; ai_next (unused for hints)
 
     ;; ; Content Body Frame template in data segment
     ;; content_body_frame:
@@ -490,6 +420,15 @@ resolve_and_connect:
     push rbp
     mov rbp, rsp
     and rsp, -16
+    
+    ; Allocate hints structure on stack
+    sub rsp, hints_t_size
+    
+    ; Initialize hints structure on stack
+    mov qword [rsp + hints_t.ai_flags], 0      ; ai_flags = 0
+    mov qword [rsp + hints_t.ai_family], 0     ; ai_family = AF_UNSPEC for dual-stack
+    mov qword [rsp + hints_t.ai_socktype], 1   ; ai_socktype = SOCK_STREAM
+    mov qword [rsp + hints_t.ai_protocol], 0   ; ai_protocol = 0 (any)
 
     ; Use runtime_host if set, otherwise use default host_str
     mov rdi, runtime_host
@@ -515,7 +454,7 @@ resolve_and_connect:
     ; Call getaddrinfo(hostname, port_string, hints, &result)
     ; rdi = hostname (already set)
     ; rsi = port string (already set) 
-    mov rdx, addrinfo_hints
+    mov rdx, rsp            ; pointer to stack-allocated hints structure
     mov rcx, addrinfo_result
     call getaddrinfo
 
