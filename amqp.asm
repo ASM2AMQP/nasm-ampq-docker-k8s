@@ -133,7 +133,6 @@ section .bss
     receive_buffer resb RECEIVE_BUFFER_SIZE
     frame_buffer   resb FRAME_BUFFER_SIZE
     message_len    resd 1
-    hex_out_buffer resb 2049
     ; Runtime configuration overrides
     runtime_username resb USERNAME_MAX
     runtime_password resb PASSWORD_MAX
@@ -1440,9 +1439,7 @@ send_content_header:
     
     ; Output frame as hex to stderr for debugging
     mov rdi, rsp                ; Frame start
-    call dump_frame_hex_spaced  ; Use spaced version for readability
-    mov rdi, hex_out_buffer     ; Print hex output
-    call print_trace
+    call dump_frame_hex_spaced  ; Print hex directly to stderr
     mov rdi, newline            ; Add newline
     call print_trace
     
@@ -1479,11 +1476,7 @@ send_content_body:
     lea rdi, [frame_buffer]         ; frame start
     mov edx, [message_len]          ; message length
     add rdx, 8                      ; + 8 for frame header (7) + frame end (1)
-    call dump_frame_hex_spaced      ; use spaced version for readability
-    mov rdi, hex_out_buffer         ; print hex output
-    call print_trace
-    mov rdi, newline                ; add newline
-    call print_trace
+    call dump_frame_hex_spaced      ; Print hex directly to stderr
 
     ; Send frame
     lea rdi, [frame_buffer]
@@ -1672,17 +1665,30 @@ byte_to_hex:
 
 ; Convert buffer to hex string
 ; Input: RDI = buffer pointer, RDX = buffer length
-; Output: hex string written to hex_out_buffer (null terminated)
+; Convert frame to hex and print to stderr for debugging  
+; Input: RDI = buffer pointer, RDX = buffer length
 dump_frame_hex:
+%ifdef TRACING
     push rsi
     push rdi
     push rcx
     push rax
-
-    mov byte [hex_out_buffer + 2048], 0 ; terminate with a zero byte
+    push rbp
+    mov rbp, rsp
+    
+    ; Allocate small hex buffer on stack (64 bytes should be enough for debugging)
+    sub rsp, 64
+    
     mov rsi, rdi            ; source buffer
-    lea rdi, [hex_out_buffer] ; destination buffer
+    mov rdi, rsp            ; destination buffer (stack)
     mov rcx, rdx            ; byte count
+    ; Limit to fit in our small buffer (max 30 bytes -> 60 hex chars + null)
+    cmp rcx, 30
+    jle .convert_start
+    mov rcx, 30
+
+.convert_start:
+    mov rbx, rcx            ; save original count
 
 convert_loop:
     test rcx, rcx
@@ -1701,26 +1707,48 @@ convert_loop:
 
 convert_done:
     mov byte [rdi], 0       ; null terminate
+    
+    ; Print the hex string
+    mov rax, 1              ; sys_write
+    mov rdi, 2              ; stderr
+    mov rsi, rsp            ; hex buffer
+    mov rdx, rbx            ; byte count * 2
+    shl rdx, 1              ; double for hex chars
+    syscall
 
+    mov rsp, rbp
+    pop rbp
     pop rax
     pop rcx
     pop rdi
     pop rsi
+%endif
     ret
 
 ; Alternative version that adds spaces between bytes for readability
-; Input: RDI = buffer pointer, RDX = buffer length
-; Output: hex string with spaces written to hex_out_buffer
+; Input: RDI = buffer pointer, RDX = buffer length  
 dump_frame_hex_spaced:
+%ifdef TRACING
     push rsi
     push rdi
     push rcx
     push rax
-
-    mov byte [hex_out_buffer + 2048], 0 ; terminate with a zero byte
+    push rbp
+    mov rbp, rsp
+    
+    ; Allocate small hex buffer on stack (96 bytes for spaced output)
+    sub rsp, 96
+    
     mov rsi, rdi            ; source buffer
-    lea rdi, [hex_out_buffer] ; destination buffer
+    mov rdi, rsp            ; destination buffer (stack)
     mov rcx, rdx            ; byte count
+    ; Limit to fit in our buffer (max 20 bytes -> 40 hex chars + 19 spaces + null = 60)
+    cmp rcx, 20
+    jle .convert_start_spaced
+    mov rcx, 20
+
+.convert_start_spaced:
+    mov rbx, rcx            ; save original count
 
 convert_loop_spaced:
     test rcx, rcx
@@ -1746,11 +1774,25 @@ skip_space:
 
 convert_done_spaced:
     mov byte [rdi], 0       ; null terminate
+    
+    ; Print the hex string  
+    mov rax, 1              ; sys_write
+    mov rdi, 2              ; stderr
+    mov rsi, rsp            ; hex buffer
+    ; Calculate length: bytes * 2 (hex) + bytes - 1 (spaces)
+    mov rdx, rbx
+    shl rdx, 1              ; bytes * 2
+    add rdx, rbx            ; + bytes  
+    dec rdx                 ; - 1 (no space after last byte)
+    syscall
 
+    mov rsp, rbp
+    pop rbp
     pop rax
     pop rcx
     pop rdi
     pop rsi
+%endif
     ret
 
 ; Helper function to write 32-bit value in big-endian format
