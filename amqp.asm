@@ -132,15 +132,18 @@ section .bss
     sockaddr       resb 128        ; Increased size to accommodate both IPv4 and IPv6
     receive_buffer resb RECEIVE_BUFFER_SIZE
     frame_buffer   resb FRAME_BUFFER_SIZE
-    ; Runtime configuration overrides
-    runtime_username resb USERNAME_MAX
-    runtime_password resb PASSWORD_MAX
-    runtime_host     resb HOSTNAME_MAX
-    runtime_port     resb 8           ; port as string
-    runtime_vhost    resb VHOST_MAX
-    runtime_queuename resb QUEUENAME_MAX
-    runtime_exchange resb EXCHANGE_MAX
-    runtime_routingkey resb ROUTINGKEY_MAX
+    ; Configuration pointers (resolved at runtime from argv or defaults)
+    config_username_ptr  resq 1    ; Pointer to username string
+    config_password_ptr  resq 1    ; Pointer to password string  
+    config_host_ptr      resq 1    ; Pointer to host string
+    config_port_ptr      resq 1    ; Pointer to port string
+    config_vhost_ptr     resq 1    ; Pointer to vhost string
+    config_queuename_ptr resq 1    ; Pointer to queuename string
+    config_exchange_ptr  resq 1    ; Pointer to exchange string
+    config_routingkey_ptr resq 1   ; Pointer to routingkey string
+    ; Temporary buffers (only when needed)
+    port_string_buffer   resb 16   ; Buffer for integer-to-string conversion
+    password_buffer      resb 128  ; Buffer for prompted password input
 
 section .text
     global _start
@@ -344,8 +347,8 @@ _start:
     cmp rax, 2
     jl show_usage
     
-    ; Initialize runtime buffers with default values
-    call init_runtime_defaults
+    ; Initialize configuration pointers with default values
+    call init_config_pointers
     
     ; Parse optional arguments: [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]
     ; argc stored in rax, argv pointers start at [rsp + 16]
@@ -354,83 +357,79 @@ _start:
     cmp rax, 3
     jl .parse_host
     mov rsi, [rsp + 24]         ; argv[2]
-    mov rdi, runtime_username
-    mov rcx, USERNAME_MAX
-    call copy_argument
+    ; Check if argument is non-empty string
+    cmp byte [rsi], 0
+    je .parse_host              ; Skip if empty
+    mov [config_username_ptr], rsi
     
 .parse_host:
     ; Parse host (argv[3])  
     cmp rax, 4
     jl .parse_port
     mov rsi, [rsp + 32]         ; argv[3]
-    mov rdi, runtime_host
-    mov rcx, HOSTNAME_MAX
-    call copy_argument
+    cmp byte [rsi], 0
+    je .parse_port              ; Skip if empty
+    mov [config_host_ptr], rsi
     
 .parse_port:
     ; Parse port (argv[4])
     cmp rax, 5
     jl .parse_vhost
     mov rsi, [rsp + 40]         ; argv[4]
-    mov rdi, runtime_port
-    mov rcx, 8
-    call copy_argument
+    cmp byte [rsi], 0
+    je .parse_vhost             ; Skip if empty
+    mov [config_port_ptr], rsi
     
 .parse_vhost:
     ; Parse vhost (argv[5])
     cmp rax, 6
     jl .parse_queuename
     mov rsi, [rsp + 48]         ; argv[5]
-    mov rdi, runtime_vhost
-    mov rcx, VHOST_MAX
-    call copy_argument
+    cmp byte [rsi], 0
+    je .parse_queuename         ; Skip if empty
+    mov [config_vhost_ptr], rsi
     
 .parse_queuename:
     ; Parse queuename (argv[6])
     cmp rax, 7
     jl .parse_exchange
     mov rsi, [rsp + 56]         ; argv[6]
-    mov rdi, runtime_queuename
-    mov rcx, QUEUENAME_MAX
-    call copy_argument
+    cmp byte [rsi], 0
+    je .parse_exchange          ; Skip if empty
+    mov [config_queuename_ptr], rsi
     
 .parse_exchange:
     ; Parse exchange (argv[7])
     cmp rax, 8
     jl .parse_routingkey
     mov rsi, [rsp + 64]         ; argv[7]
-    mov rdi, runtime_exchange
-    mov rcx, EXCHANGE_MAX
-    call copy_argument
+    cmp byte [rsi], 0
+    je .parse_routingkey        ; Skip if empty
+    mov [config_exchange_ptr], rsi
     
 .parse_routingkey:
     ; Parse routingkey (argv[8])
     cmp rax, 9
     jl .check_password
     mov rsi, [rsp + 72]         ; argv[8]
-    mov rdi, runtime_routingkey
-    mov rcx, ROUTINGKEY_MAX
-    call copy_argument
+    cmp byte [rsi], 0
+    je .check_password          ; Skip if empty
+    mov [config_routingkey_ptr], rsi
 
 .check_password:
-    ; If username was provided as argument AND is not empty, prompt for password
+    ; If username was provided as argument AND is not from defaults, prompt for password
     ; Check if argc >= 3 (meaning username argument was provided)
     mov rbx, [rsp]              ; argc
     cmp rbx, 3
-    jl .init_port_default
+    jl .parse_mode
+    ; Check if username pointer is not pointing to default
+    mov rax, [config_username_ptr]
+    cmp rax, username
+    je .parse_mode              ; Skip if still pointing to default
     ; Also check if username is not empty
-    cmp byte [runtime_username], 0
-    je .init_port_default
+    cmp byte [rax], 0
+    je .parse_mode
     call prompt_password
-
-.init_port_default:
-    ; Initialize port string if not provided
-    cmp byte [runtime_port], 0
-    jne .parse_mode
-    ; Convert compile-time PORT to string in runtime_port
-    mov rdi, runtime_port
-    mov rax, PORT
-    call int_to_string
 
 .parse_mode:
     ; Parse mode
@@ -563,25 +562,9 @@ resolve_and_connect:
     mov dword [rsp + hints_t.ai_socktype], SOCK_STREAM ; ai_socktype = SOCK_STREAM (TCP)
     mov dword [rsp + hints_t.ai_protocol], 0       ; ai_protocol = 0 (any)
 
-    ; Use runtime_host if set, otherwise use default host_str
-    mov rdi, runtime_host
-    cmp byte [rdi], 0       ; check if runtime_host is empty
-    jne .use_runtime_host
-    mov rdi, host_str       ; use default if runtime_host is empty
-.use_runtime_host:
-    
-    ; Prepare port string - use runtime port if provided, otherwise convert default
-    mov rsi, runtime_port
-    cmp byte [rsi], 0
-    jne .call_getaddrinfo
-    
-    ; Convert compile-time PORT to string for getaddrinfo
-    push rdi                ; save hostname
-    mov rdi, runtime_port   ; destination buffer
-    mov rax, PORT           ; port number
-    call int_to_string      ; convert to string
-    pop rdi                 ; restore hostname
-    mov rsi, runtime_port   ; use converted port string
+    ; Use configured hostname and port pointers
+    mov rdi, [config_host_ptr]      ; hostname from config pointer
+    mov rsi, [config_port_ptr]      ; port string from config pointer
 
 .call_getaddrinfo:
     ; Call getaddrinfo(hostname, port_string, hints, &result)
@@ -709,43 +692,21 @@ send_amqp_header:
     ret
 
 send_connection_start_ok:
-    ; Allocate username, password, and frame buffer on stack
-    sub rsp, USERNAME_MAX + PASSWORD_MAX + FRAME_BUFFER_SIZE
+    ; Build frame with configured username and password directly
+    ; No need to copy - use pointers directly for frame construction
+    sub rsp, FRAME_BUFFER_SIZE      ; Only allocate frame buffer on stack
     
-    ; Copy username to stack
-    mov rdi, rsp                    ; Stack username buffer
-    mov rsi, runtime_username       ; Source
-    mov rcx, USERNAME_MAX
-    call copy_string_safe
-    
-    ; Copy password to stack  
-    mov rdi, rsp
-    add rdi, USERNAME_MAX           ; Stack password buffer
-    mov rsi, runtime_password       ; Source
-    mov rcx, PASSWORD_MAX
-    call copy_string_safe
-    
-    ; Build frame with stack-based credentials and frame buffer
-    mov rdi, rsp
-    add rdi, USERNAME_MAX + PASSWORD_MAX  ; Stack frame buffer
-    mov rsi, rsp                    ; Username on stack
-    mov rdx, rsp
-    add rdx, USERNAME_MAX           ; Password on stack
+    mov rdi, rsp                    ; Stack frame buffer
+    mov rsi, [config_username_ptr]  ; Username from config pointer
+    mov rdx, [config_password_ptr]  ; Password from config pointer
     call build_connection_start_ok_frame
     
-    ; Clear password from stack for security
-    mov rdi, rsp
-    add rdi, USERNAME_MAX
-    mov rcx, PASSWORD_MAX
-    call clear_memory
-    
     ; Send frame
-    mov rdi, rsp
-    add rdi, USERNAME_MAX + PASSWORD_MAX  ; Stack frame buffer
+    mov rdi, rsp                    ; Stack frame buffer
     mov edx, eax                    ; frame size returned in eax
     call send_frame
     
-    add rsp, USERNAME_MAX + PASSWORD_MAX + FRAME_BUFFER_SIZE
+    add rsp, FRAME_BUFFER_SIZE
     ret
 
 ; Build Connection.StartOk frame with runtime credentials
@@ -911,22 +872,13 @@ build_connection_open_frame:
     mov word [rdi], 0x2800      ; method 40 (Open) - big endian
     add rdi, 2
     
-    ; Virtual host - use runtime or default
-    mov rsi, runtime_vhost
-    cmp byte [rsi], 0
-    jne .use_runtime_vhost
-    mov rsi, vhost
-    mov rcx, vhost_len
-    jmp .copy_vhost
-    
-.use_runtime_vhost:
-    call str_len                ; get length in rcx
-    
-.copy_vhost:
-    mov [rdi], cl               ; vhost length
+    ; Virtual host - use configured pointer
+    mov rsi, [config_vhost_ptr]     ; get vhost from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; vhost length
     inc rdi
-    movzx rcx, cl               ; ensure rcx contains only the length value
-    rep movsb                   ; copy vhost string
+    movzx rcx, cl                   ; ensure rcx contains only the length value
+    rep movsb                       ; copy vhost string
     
     ; Reserved fields
     mov word [rdi], 0
@@ -998,22 +950,13 @@ build_exchange_declare_frame:
     mov word [rdi], 0
     add rdi, 2
     
-    ; Exchange name - use runtime or default
-    mov rsi, runtime_exchange
-    cmp byte [rsi], 0
-    jne .use_runtime_exchange
-    mov rsi, exchange
-    mov rcx, exchange_len
-    jmp .copy_exchange
-    
-.use_runtime_exchange:
-    call str_len
-    
-.copy_exchange:
-    mov [rdi], cl               ; exchange name length
+    ; Exchange name - use configured pointer
+    mov rsi, [config_exchange_ptr]  ; get exchange from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; exchange name length
     inc rdi
-    movzx rcx, cl               ; ensure rcx contains only the length value
-    rep movsb                   ; copy exchange name
+    movzx rcx, cl                   ; ensure rcx contains only the length value
+    rep movsb                       ; copy exchange name
     
     ; Type (topic)
     mov byte [rdi], 5           ; length
@@ -1085,22 +1028,13 @@ build_queue_declare_frame:
     mov word [rdi], 0
     add rdi, 2
     
-    ; Queue name - use runtime or default
-    mov rsi, runtime_queuename
-    cmp byte [rsi], 0
-    jne .use_runtime_queue
-    mov rsi, queue_name
-    mov rcx, queue_name_len
-    jmp .copy_queue
-    
-.use_runtime_queue:
-    call str_len
-    
-.copy_queue:
-    mov [rdi], cl               ; queue name length
+    ; Queue name - use configured pointer
+    mov rsi, [config_queuename_ptr] ; get queue name from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; queue name length
     inc rdi
-    movzx rcx, cl               ; ensure rcx contains only the length value
-    rep movsb                   ; copy queue name
+    movzx rcx, cl                   ; ensure rcx contains only the length value
+    rep movsb                       ; copy queue name
     
     ; Flags (passive=0, durable=1, exclusive=0, auto-delete=0, nowait=0)
     mov byte [rdi], 0x02
@@ -1166,56 +1100,29 @@ build_queue_bind_frame:
     mov word [rdi], 0
     add rdi, 2
     
-    ; Queue name - use runtime or default
-    mov rsi, runtime_queuename
-    cmp byte [rsi], 0
-    jne .use_runtime_queue
-    mov rsi, queue_name
-    mov rcx, queue_name_len
-    jmp .copy_queue
-    
-.use_runtime_queue:
-    call str_len
-    
-.copy_queue:
-    mov [rdi], cl               ; queue name length
+    ; Queue name - use configured pointer
+    mov rsi, [config_queuename_ptr] ; get queue name from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; queue name length
     inc rdi
-    movzx rcx, cl               ; ensure rcx contains only the length value
-    rep movsb                   ; copy queue name
+    movzx rcx, cl                   ; ensure rcx contains only the length value
+    rep movsb                       ; copy queue name
     
-    ; Exchange name - use runtime or default
-    mov rsi, runtime_exchange
-    cmp byte [rsi], 0
-    jne .use_runtime_exchange
-    mov rsi, exchange  
-    mov rcx, exchange_len
-    jmp .copy_exchange
-    
-.use_runtime_exchange:
-    call str_len
-    
-.copy_exchange:
-    mov [rdi], cl               ; exchange name length
+    ; Exchange name - use configured pointer
+    mov rsi, [config_exchange_ptr]  ; get exchange from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; exchange name length
     inc rdi
     movzx rcx, cl
-    rep movsb                   ; copy exchange name
+    rep movsb                       ; copy exchange name
     
-    ; Routing key - use runtime or default
-    mov rsi, runtime_routingkey
-    cmp byte [rsi], 0
-    jne .use_runtime_routing
-    mov rsi, routing_key
-    mov rcx, routing_key_len
-    jmp .copy_routing
-    
-.use_runtime_routing:
-    call str_len
-    
-.copy_routing:
-    mov [rdi], cl               ; routing key length
+    ; Routing key - use configured pointer
+    mov rsi, [config_routingkey_ptr] ; get routing key from config pointer
+    call str_len                     ; get length in rcx
+    mov [rdi], cl                    ; routing key length
     inc rdi
     movzx rcx, cl
-    rep movsb                   ; copy routing key
+    rep movsb                        ; copy routing key
     
     ; Nowait flag
     mov byte [rdi], 0
@@ -1281,22 +1188,13 @@ build_basic_consume_frame:
     mov word [rdi], 0
     add rdi, 2
     
-    ; Queue name - use runtime or default
-    mov rsi, runtime_queuename
-    cmp byte [rsi], 0
-    jne .use_runtime_queue
-    mov rsi, queue_name
-    mov rcx, queue_name_len
-    jmp .copy_queue
-    
-.use_runtime_queue:
-    call str_len
-    
-.copy_queue:
-    mov [rdi], cl               ; queue name length
+    ; Queue name - use configured pointer
+    mov rsi, [config_queuename_ptr] ; get queue name from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; queue name length
     inc rdi
     movzx rcx, cl
-    rep movsb                   ; copy queue name
+    rep movsb                       ; copy queue name
     
     ; Consumer tag (empty)
     mov byte [rdi], 0
@@ -1380,39 +1278,21 @@ build_basic_publish_frame:
     mov word [rdi], 0
     add rdi, 2
     
-    ; Exchange name - use runtime or default
-    mov rsi, runtime_exchange
-    cmp byte [rsi], 0
-    jne .use_runtime_exchange
-    mov rsi, exchange
-    mov rcx, exchange_len
-    jmp .copy_exchange
-    
-.use_runtime_exchange:
-    call str_len
-    
-.copy_exchange:
-    mov [rdi], cl               ; exchange name length
+    ; Exchange name - use configured pointer
+    mov rsi, [config_exchange_ptr]  ; get exchange from config pointer
+    call str_len                    ; get length in rcx
+    mov [rdi], cl                   ; exchange name length
     inc rdi
-    movzx rcx, cl               ; ensure rcx contains only the length value
-    rep movsb                   ; copy exchange name
+    movzx rcx, cl                   ; ensure rcx contains only the length value
+    rep movsb                       ; copy exchange name
     
-    ; Routing key - use runtime or default
-    mov rsi, runtime_routingkey
-    cmp byte [rsi], 0
-    jne .use_runtime_routing
-    mov rsi, routing_key
-    mov rcx, routing_key_len
-    jmp .copy_routing
-    
-.use_runtime_routing:
-    call str_len
-    
-.copy_routing:
-    mov [rdi], cl               ; routing key length
+    ; Routing key - use configured pointer
+    mov rsi, [config_routingkey_ptr] ; get routing key from config pointer
+    call str_len                     ; get length in rcx
+    mov [rdi], cl                    ; routing key length
     inc rdi
     movzx rcx, cl
-    rep movsb                   ; copy routing key
+    rep movsb                        ; copy routing key
     
     ; Flags (mandatory=0, immediate=0)
     mov byte [rdi], 0
@@ -1845,58 +1725,36 @@ str_len:
     ret
 
 ; Initialize runtime configuration buffers with compile-time defaults
-init_runtime_defaults:
-    push rsi
-    push rdi
-    push rcx
-    push rax
+init_config_pointers:
+    ; Initialize configuration pointers to compile-time defaults
+    mov rax, username
+    mov [config_username_ptr], rax
     
-    ; Initialize username with default
-    mov rsi, username
-    mov rdi, runtime_username
-    mov rcx, username_len
-    call copy_string_with_len
+    mov rax, password
+    mov [config_password_ptr], rax
     
-    ; Initialize password with default
-    mov rsi, password
-    mov rdi, runtime_password
-    mov rcx, password_len
-    call copy_string_with_len
+    mov rax, host_str
+    mov [config_host_ptr], rax
     
-    ; Initialize host with default (copy until null terminator)
-    mov rsi, host_str
-    mov rdi, runtime_host
-    mov rcx, HOSTNAME_MAX - 1
-    call copy_string_until_null
+    ; Initialize port as string - convert PORT constant to string
+    mov rdi, port_string_buffer
+    mov rax, PORT
+    call int_to_string
+    mov rax, port_string_buffer
+    mov [config_port_ptr], rax
     
-    ; Initialize vhost with default
-    mov rsi, vhost
-    mov rdi, runtime_vhost
-    mov rcx, vhost_len
-    call copy_string_with_len
+    mov rax, vhost
+    mov [config_vhost_ptr], rax
     
-    ; Initialize queue name with default
-    mov rsi, queue_name
-    mov rdi, runtime_queuename
-    mov rcx, queue_name_len
-    call copy_string_with_len
+    mov rax, queue_name
+    mov [config_queuename_ptr], rax
     
-    ; Initialize exchange with default
-    mov rsi, exchange
-    mov rdi, runtime_exchange
-    mov rcx, exchange_len
-    call copy_string_with_len
+    mov rax, exchange
+    mov [config_exchange_ptr], rax
     
-    ; Initialize routing key with default
-    mov rsi, routing_key
-    mov rdi, runtime_routingkey
-    mov rcx, routing_key_len
-    call copy_string_with_len
+    mov rax, routing_key
+    mov [config_routingkey_ptr], rax
     
-    pop rax
-    pop rcx
-    pop rdi
-    pop rsi
     ret
 
 ; Copy string with known length
@@ -1944,42 +1802,6 @@ copy_string_until_null:
     
 .done:
     mov byte [rdi], 0       ; null terminate
-    pop rcx
-    pop rdi
-    pop rsi
-    ret
-
-; Copy command line argument to buffer if present and non-empty
-; Input: rsi = source string pointer, rdi = destination buffer, rcx = buffer size
-; Modifies: rax, rdx
-copy_argument:
-    push rsi
-    push rdi
-    push rcx
-    
-    ; Check if argument exists and is not empty
-    test rsi, rsi
-    jz .done
-    cmp byte [rsi], 0
-    je .done
-    
-    ; Copy argument to buffer
-    dec rcx                     ; leave space for null terminator
-.copy_loop:
-    test rcx, rcx
-    jz .copy_done
-    mov al, [rsi]
-    test al, al
-    jz .copy_done
-    mov [rdi], al
-    inc rsi
-    inc rdi  
-    dec rcx
-    jmp .copy_loop
-.copy_done:
-    mov byte [rdi], 0
-    
-.done:
     pop rcx
     pop rdi
     pop rsi
@@ -2087,19 +1909,24 @@ prompt_password:
     ; Read password from stdin
     mov rax, 0                  ; sys_read
     mov rdi, 0                  ; stdin
-    mov rsi, runtime_password
-    mov rdx, PASSWORD_MAX - 1
+    mov rsi, password_buffer
+    mov rdx, 127                ; Leave space for null terminator
     syscall
     
     ; Remove trailing newline if present
     test rax, rax
     jz .password_done
-    mov rdi, runtime_password
+    mov rdi, password_buffer
     add rdi, rax
     dec rdi
     cmp byte [rdi], 10          ; newline
-    jne .password_done
+    jne .set_password_ptr
     mov byte [rdi], 0
+    
+.set_password_ptr:
+    ; Update password pointer to point to entered password
+    mov rax, password_buffer
+    mov [config_password_ptr], rax
     
 .password_done:
     pop rdx
