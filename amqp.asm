@@ -132,7 +132,6 @@ section .bss
     sockaddr       resb 128        ; Increased size to accommodate both IPv4 and IPv6
     receive_buffer resb RECEIVE_BUFFER_SIZE
     frame_buffer   resb FRAME_BUFFER_SIZE
-    message_len    resd 1
     ; Runtime configuration overrides
     runtime_username resb USERNAME_MAX
     runtime_password resb PASSWORD_MAX
@@ -465,12 +464,19 @@ send_loop:
     test rax, rax
     jz .cleanup_send_exit
 
+    ; Save message length on stack for use by publish_message
+    push rax                        ; message length
+
     mov rdi, trace_publish
     call print_trace
 
-    ; Pass input buffer address to publish_message  
-    mov rdi, rsp  ; input buffer address
+    ; Pass input buffer address and message length to publish_message  
+    mov rdi, rsp  ; input buffer address (note: now offset by 8 due to push)
+    add rdi, 8    ; adjust for pushed message length
+    mov rsi, [rsp] ; message length from stack
     call publish_message
+
+    pop rax       ; clean up message length from stack
 
     mov rdi, trace_send
     call print_trace
@@ -1326,8 +1332,9 @@ build_basic_consume_frame:
     ret
 
 publish_message:
-    ; Input: RDI = input buffer address
+    ; Input: RDI = input buffer address, RSI = message length
     push rdi  ; save input buffer address
+    push rsi  ; save message length
     
     ; Build and send dynamic Basic.Publish method frame
     call build_basic_publish_frame
@@ -1336,13 +1343,16 @@ publish_message:
     call send_frame
 
     ; Send content header
+    mov rsi, [rsp]              ; message length from stack
     call send_content_header
 
-    ; Send content body with input buffer address
-    mov rdi, [rsp]              ; get input buffer address
+    ; Send content body with input buffer address and message length
+    mov rdi, [rsp + 8]          ; get input buffer address
+    mov rsi, [rsp]              ; message length
     call send_content_body
     
-    pop rdi   ; restore and discard input buffer address
+    pop rsi   ; restore message length
+    pop rdi   ; restore input buffer address
     ret
 
 ; Build Basic.Publish frame with runtime exchange and routing key
@@ -1430,10 +1440,11 @@ build_basic_publish_frame:
     ret
 
 send_content_header:
+    ; Input: RSI = message length
     ; Allocate frame on stack
     sub rsp, 32                 ; Allocate space for frame
     mov rdi, rsp                ; Use stack space as buffer
-    mov esi, [message_len]      ; Message length
+    ; RSI already contains message length
     call build_content_header_frame
     mov rdx, rax                ; Frame size
     
@@ -1450,41 +1461,43 @@ send_content_header:
     ret
 
 send_content_body:
-    ; Input: RDI = input buffer address
+    ; Input: RDI = input buffer address, RSI = message length
     push rdi  ; save input buffer address
+    push rsi  ; save message length
     
     ; Build AMQP body frame
     lea rdi, [frame_buffer]
     mov byte [rdi], 3               ; body frame type
     mov word [rdi + 1], 0x0100      ; channel 1 (big endian)
     ; Frame size (big endian)
-    mov eax, [message_len]
+    mov eax, [rsp]                  ; message length from stack
     cmp eax, FRAME_BUFFER_SIZE - 8
     ja frame_buffer_overflow
     mov rsi, rdi
     add rsi, 3                      ; point to frame size field
     call write_be32_at_rsi          ; write frame size in big endian
     ; Copy message
-    mov rsi, [rsp]                  ; input buffer address
+    mov rsi, [rsp + 8]              ; input buffer address from stack
     add rdi, 7
-    mov ecx, [message_len]
+    mov ecx, [rsp]                  ; message length from stack
     rep movsb
     ; Frame end
     mov byte [rdi], 0xCE
 
     ; Output frame as hex to stderr
     lea rdi, [frame_buffer]         ; frame start
-    mov edx, [message_len]          ; message length
+    mov edx, [rsp]                  ; message length from stack
     add rdx, 8                      ; + 8 for frame header (7) + frame end (1)
     call dump_frame_hex_spaced      ; Print hex directly to stderr
 
     ; Send frame
     lea rdi, [frame_buffer]
-    mov edx, [message_len]
+    mov edx, [rsp]                  ; message length from stack
     add rdx, 8
     call send_frame
     
-    pop rdi   ; restore and discard input buffer address
+    pop rsi   ; restore message length
+    pop rdi   ; restore input buffer address
     ret
 
 send_frame:
@@ -1576,14 +1589,13 @@ read_stdin_message:
     dec rax
     mov rsi, [rsp]                  ; input buffer address
     mov byte [rsi + rax], 0
-    mov [message_len], eax
 
-    ; Return non-zero for success
+    ; Return message length in RAX
     test eax, eax
     jz .skip_empty_line
     
     pop rdi   ; restore and discard input buffer address
-    mov rax, 1
+    ; RAX already contains message length
     ret
 
 .skip_empty_line:
