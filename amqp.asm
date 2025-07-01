@@ -39,6 +39,10 @@ EXCHANGE_MAX    equ 256
 VHOST_MAX       equ 128
 ROUTINGKEY_MAX  equ 256
 
+; Socket constants for getaddrinfo
+AF_UNSPEC       equ 0       ; IPv4 or IPv6
+SOCK_STREAM     equ 1       ; TCP stream socket
+
 ; Structure definition for addrinfo hints
 struc hints_t
     .ai_flags    resq 1      ; int, usually 4 bytes but qword for alignment
@@ -405,10 +409,10 @@ resolve_and_connect:
     sub rsp, hints_t_size
     
     ; Initialize hints structure on stack
-    mov qword [rsp + hints_t.ai_flags], 0      ; ai_flags = 0
-    mov qword [rsp + hints_t.ai_family], 0     ; ai_family = AF_UNSPEC for dual-stack
-    mov qword [rsp + hints_t.ai_socktype], 1   ; ai_socktype = SOCK_STREAM
-    mov qword [rsp + hints_t.ai_protocol], 0   ; ai_protocol = 0 (any)
+    mov qword [rsp + hints_t.ai_flags], 0          ; ai_flags = 0
+    mov qword [rsp + hints_t.ai_family], AF_UNSPEC ; ai_family = AF_UNSPEC (IPv4 or IPv6)
+    mov qword [rsp + hints_t.ai_socktype], SOCK_STREAM ; ai_socktype = SOCK_STREAM (TCP)
+    mov qword [rsp + hints_t.ai_protocol], 0       ; ai_protocol = 0 (any)
 
     ; Use runtime_host if set, otherwise use default host_str
     mov rdi, runtime_host
