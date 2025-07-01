@@ -340,7 +340,6 @@ clear_memory:
     pop rax
     ret
 
-
 _start:
     ; Check arguments - at least mode required
     mov rax, [rsp]
@@ -703,7 +702,6 @@ send_amqp_header:
     mov rdx, 8
     syscall
     ret
-
 
 send_connection_start_ok:
     ; Allocate username, password, and frame buffer on stack
@@ -1639,7 +1637,6 @@ strlen_loop:
     jmp strlen_loop
 strlen_done:
     ret
-
 
 ; Hex dump functions for NASM x64 Linux
 
