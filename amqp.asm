@@ -320,9 +320,11 @@ _start:
     call copy_argument
 
 .check_password:
-    ; If username was provided, prompt for password
-    cmp byte [runtime_username], 0
-    je .init_port_default
+    ; If username was provided as argument, prompt for password
+    ; Check if argc >= 3 (meaning username argument was provided)
+    mov rbx, [rsp]              ; argc
+    cmp rbx, 3
+    jl .init_port_default
     call prompt_password
 
 .init_port_default:
