@@ -202,7 +202,6 @@ section .bss
     frame_buffer   resb FRAME_BUFFER_SIZE
     message_len    resd 1
     hex_out_buffer resb 2049
-    addrinfo_result resq 1         ; Pointer to getaddrinfo result
     ; Runtime configuration overrides
     runtime_username resb USERNAME_MAX
     runtime_password resb PASSWORD_MAX
@@ -420,14 +419,14 @@ resolve_and_connect:
     mov rbp, rsp
     and rsp, -16
     
-    ; Allocate space for hints structure on stack
-    sub rsp, addrinfo_hints_size
+    ; Allocate space for hints structure and addrinfo result pointer on stack
+    sub rsp, addrinfo_hints_size + 8    ; +8 for addrinfo result pointer
     
     ; Initialize hints structure on stack (zero the whole structure first)
     push rdi
     mov rdi, rsp
     add rdi, 8          ; account for saved rdi
-    mov rcx, addrinfo_hints_size
+    mov rcx, addrinfo_hints_size + 8    ; also clear the result pointer
     xor rax, rax
     rep stosb
     pop rdi
@@ -463,21 +462,18 @@ resolve_and_connect:
     ; rdi = hostname (already set)
     ; rsi = port string (already set) 
     mov rdx, rsp            ; pointer to stack-allocated hints structure
-    mov rcx, addrinfo_result
+    lea rcx, [rsp + addrinfo_hints_size]  ; pointer to addrinfo result pointer on stack
     call getaddrinfo
 
-    mov rsp, rbp
-    pop rbp
-
     test rax, rax
-    jnz dns_fail_handler    ; getaddrinfo returns 0 on success
+    jnz .cleanup_and_fail   ; getaddrinfo returns 0 on success
 
     ; Try each address until one connects
-    mov rsi, [addrinfo_result]  ; First addrinfo structure
+    mov rsi, [rsp + addrinfo_hints_size]  ; Load addrinfo result pointer from stack
 
 .try_address:
     test rsi, rsi
-    jz connect_fail_handler     ; No more addresses to try
+    jz .cleanup_and_connect_fail     ; No more addresses to try
 
     ; Save current addrinfo pointer
     mov r8, rsi
@@ -520,17 +516,40 @@ resolve_and_connect:
     jmp .try_address
 
 .connection_success:
-    
-    ; Free the addrinfo result
+    ; Free the addrinfo result and clean up stack
     push rbp
     mov rbp, rsp
     and rsp, -16
-    mov rdi, [addrinfo_result]
+    mov rdi, [rbp - addrinfo_hints_size - 8]  ; Load addrinfo result pointer from original stack position
     call freeaddrinfo
     mov rsp, rbp
     pop rbp
     
+    ; Restore original stack pointer and return
+    mov rsp, rbp
+    pop rbp
     ret
+
+.cleanup_and_fail:
+    ; Clean up stack and jump to failure handler
+    mov rsp, rbp
+    pop rbp
+    jmp dns_fail_handler
+
+.cleanup_and_connect_fail:
+    ; Free addrinfo and jump to connect failure handler
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    mov rdi, [rbp - addrinfo_hints_size - 8]  ; Load addrinfo result pointer from original stack position
+    call freeaddrinfo
+    mov rsp, rbp
+    pop rbp
+    
+    ; Restore original stack pointer and jump to failure handler
+    mov rsp, rbp
+    pop rbp
+    jmp connect_fail_handler
 
 amqp_handshake:
     ; Send protocol header
