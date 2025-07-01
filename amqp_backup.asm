@@ -443,49 +443,6 @@ _start:
     je mode_receive
     jmp mode_error
 
-; Initialize runtime configuration buffers with compile-time defaults
-init_config_pointers:
-    ; Initialize configuration pointers to compile-time defaults
-    mov rax, username
-    mov [config_username_ptr], rax
-    
-    mov rax, password
-    mov [config_password_ptr], rax
-    
-    mov rax, host_str
-    mov [config_host_ptr], rax
-    
-    ; Initialize port as string - convert PORT constant to string
-    mov rdi, port_string_buffer
-    mov rax, PORT
-    call int_to_string
-    mov rax, port_string_buffer
-    mov [config_port_ptr], rax
-    
-    mov rax, vhost
-    mov [config_vhost_ptr], rax
-    
-    mov rax, queue_name
-    mov [config_queuename_ptr], rax
-    
-    mov rax, exchange
-    mov [config_exchange_ptr], rax
-    
-    mov rax, routing_key
-    mov [config_routingkey_ptr], rax
-    
-    ret
-
-show_usage:
-    mov rdi, usage_msg
-    call print_string_to_stderr
-    jmp exit_error
-
-mode_error:
-    mov rdi, mode_err
-    call print_string_to_stderr
-    jmp exit_error
-
 mode_send:
     call setup_connection
     call setup_channel_and_exchange
@@ -548,53 +505,6 @@ mode_receive:
 receive_loop:
     call wait_for_message
     jmp receive_loop
-
-; Convert integer to string (simple implementation for small positive numbers)
-; Input: RAX = integer, RDI = destination buffer
-; Output: null-terminated string in buffer
-int_to_string:
-    push rbx
-    push rcx
-    push rdx
-    
-    mov rbx, 10         ; divisor
-    mov rcx, 0          ; digit counter
-    
-    ; Handle zero case
-    test rax, rax
-    jnz .convert_loop
-    mov byte [rdi], '0'
-    mov byte [rdi + 1], 0
-    jmp .done
-    
-.convert_loop:
-    test rax, rax
-    jz .reverse_digits
-    
-    xor rdx, rdx        ; clear remainder
-    div rbx             ; divide by 10
-    add dl, '0'         ; convert remainder to ASCII
-    push rdx            ; store digit on stack
-    inc rcx             ; increment digit count
-    jmp .convert_loop
-    
-.reverse_digits:
-    test rcx, rcx
-    jz .add_null
-    pop rdx
-    mov [rdi], dl
-    inc rdi
-    dec rcx
-    jmp .reverse_digits
-    
-.add_null:
-    mov byte [rdi], 0   ; null terminator
-    
-.done:
-    pop rdx
-    pop rcx
-    pop rbx
-    ret
 
     jmp cleanup_exit
 
@@ -1814,6 +1724,39 @@ str_len:
     pop rax
     ret
 
+; Initialize runtime configuration buffers with compile-time defaults
+init_config_pointers:
+    ; Initialize configuration pointers to compile-time defaults
+    mov rax, username
+    mov [config_username_ptr], rax
+    
+    mov rax, password
+    mov [config_password_ptr], rax
+    
+    mov rax, host_str
+    mov [config_host_ptr], rax
+    
+    ; Initialize port as string - convert PORT constant to string
+    mov rdi, port_string_buffer
+    mov rax, PORT
+    call int_to_string
+    mov rax, port_string_buffer
+    mov [config_port_ptr], rax
+    
+    mov rax, vhost
+    mov [config_vhost_ptr], rax
+    
+    mov rax, queue_name
+    mov [config_queuename_ptr], rax
+    
+    mov rax, exchange
+    mov [config_exchange_ptr], rax
+    
+    mov rax, routing_key
+    mov [config_routingkey_ptr], rax
+    
+    ret
+
 ; Copy string with known length
 ; Input: rsi = source, rdi = dest, rcx = length
 copy_string_with_len:
@@ -1862,6 +1805,53 @@ copy_string_until_null:
     pop rcx
     pop rdi
     pop rsi
+    ret
+
+; Convert integer to string (simple implementation for small positive numbers)
+; Input: RAX = integer, RDI = destination buffer
+; Output: null-terminated string in buffer
+int_to_string:
+    push rbx
+    push rcx
+    push rdx
+    
+    mov rbx, 10         ; divisor
+    mov rcx, 0          ; digit counter
+    
+    ; Handle zero case
+    test rax, rax
+    jnz .convert_loop
+    mov byte [rdi], '0'
+    mov byte [rdi + 1], 0
+    jmp .done
+    
+.convert_loop:
+    test rax, rax
+    jz .reverse_digits
+    
+    xor rdx, rdx        ; clear remainder
+    div rbx             ; divide by 10
+    add dl, '0'         ; convert remainder to ASCII
+    push rdx            ; store digit on stack
+    inc rcx             ; increment digit count
+    jmp .convert_loop
+    
+.reverse_digits:
+    test rcx, rcx
+    jz .add_null
+    pop rdx
+    mov [rdi], dl
+    inc rdi
+    dec rcx
+    jmp .reverse_digits
+    
+.add_null:
+    mov byte [rdi], 0   ; null terminator
+    
+.done:
+    pop rdx
+    pop rcx
+    pop rbx
     ret
 
 ; Convert string to integer (simple implementation for positive numbers)
@@ -1953,6 +1943,16 @@ cleanup_exit:
     mov rax, 60                     ; sys_exit
     xor rdi, rdi
     syscall
+
+show_usage:
+    mov rdi, usage_msg
+    call print_string_to_stderr
+    jmp exit_error
+
+mode_error:
+    mov rdi, mode_err
+    call print_string_to_stderr
+    jmp exit_error
 
 dns_fail_handler:
     mov rdi, error_dns_fail
