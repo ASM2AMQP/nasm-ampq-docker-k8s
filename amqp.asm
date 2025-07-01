@@ -699,8 +699,7 @@ build_connection_start_ok_frame:
     sub rax, 8                  ; subtract frame header
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax
-    mov [rsi], eax
+    call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
@@ -780,8 +779,7 @@ build_connection_open_frame:
     sub rax, 8                  ; subtract frame header size  
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax                   ; convert to big endian
-    mov [rsi], eax              ; set payload size
+    call write_be32_at_rsi      ; convert to big endian
     
     ; Return total frame size in eax
     mov rax, rdi
@@ -874,8 +872,7 @@ build_exchange_declare_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax
-    mov [rsi], eax
+    call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
@@ -955,8 +952,7 @@ build_queue_declare_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax
-    mov [rsi], eax
+    call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
@@ -1071,8 +1067,7 @@ build_queue_bind_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax
-    mov [rsi], eax
+    call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
@@ -1157,8 +1152,7 @@ build_basic_consume_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax
-    mov [rsi], eax
+    call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
@@ -1256,8 +1250,7 @@ build_basic_publish_frame:
     sub rax, 8
     mov rsi, frame_buffer
     add rsi, 3
-    bswap eax
-    mov [rsi], eax
+    call write_be32_at_rsi
     
     ; Return total frame size
     mov rax, rdi
@@ -1279,10 +1272,11 @@ send_content_header:
     rep movsb
 
     ; Set body size (big endian conversion)
-    mov eax, [message_len]       ; load 32-bit length
-    bswap eax                   ; convert to big-endian
+    mov eax, [message_len]       ; load 32-bit length  
     mov dword [frame_buffer + body_size_offset], 0      ; upper 4 bytes = 0
-    mov dword [frame_buffer + body_size_offset + 4], eax ; lower 4 bytes = be
+    ; Write lower 4 bytes in big endian
+    mov rsi, frame_buffer + body_size_offset + 4
+    call write_be32_at_rsi       ; lower 4 bytes in big endian
 
     ; Output frame as hex to stderr
     lea rdi, [frame_buffer]         ; frame start
@@ -1308,8 +1302,9 @@ send_content_body:
     mov eax, [message_len]
     cmp eax, FRAME_BUFFER_SIZE - 8
     ja frame_buffer_overflow
-    bswap eax
-    mov dword [rdi + 3], eax
+    mov rsi, rdi
+    add rsi, 3                      ; point to frame size field
+    call write_be32_at_rsi          ; write frame size in big endian
     ; Copy message
     lea rsi, [input_buffer]
     add rdi, 7
@@ -1387,6 +1382,7 @@ receive_frame:
 
     ; Extract payload size (convert from big endian)
     mov eax, [receive_buffer + 3]
+    ; Convert from big endian to little endian
     bswap eax
 
     ; Check payload size fits in buffer
@@ -1582,6 +1578,24 @@ convert_done_spaced:
     pop rcx
     pop rdi
     pop rsi
+    ret
+
+; Helper function to write 32-bit value in big-endian format
+; Input: eax = value, rsi = destination address
+write_be32_at_rsi:
+    push rdx
+    ; Write bytes in big-endian order (network byte order)
+    mov edx, eax
+    shr edx, 24
+    mov [rsi], dl               ; bits 31-24 (MSB)
+    mov edx, eax
+    shr edx, 16  
+    mov [rsi+1], dl             ; bits 23-16
+    mov edx, eax
+    shr edx, 8
+    mov [rsi+2], dl             ; bits 15-8  
+    mov [rsi+3], al             ; bits 7-0 (LSB)
+    pop rdx
     ret
 
 ; Calculate string length 
