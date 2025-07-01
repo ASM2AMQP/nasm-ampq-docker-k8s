@@ -117,25 +117,7 @@ section .data
 
     ; Prebuilt AMQP frames with correct byte order
 
-    ; Connection.StartOk Frame
-    conn_start_ok_frame:
-        db 1                        ; frame type (method)
-        db 0, 0                     ; channel 0
-        db 0, 0, 0, (conn_start_ok_payload_end - conn_start_ok_payload) ; payload size
-    conn_start_ok_payload:
-        db 0, 10, 0, 11            ; Connection.StartOk (class 10, method 11)
-        db 0, 0, 0, 0              ; client properties (empty table)
-        db 5, "PLAIN"              ; mechanism (length + string)
-        db (sasl_end - sasl_start) ; response length (1 byte)
-    sasl_start:
-        db 0, USERNAME
-        db 0, PASSWORD
-    sasl_end:
-        db 5, "en_US"              ; locale (length + string)
-    conn_start_ok_payload_end:
-        db 0xCE                    ; frame end
-
-    ; Connection.TuneOk Frame
+    ; Connection.TuneOk Frame  
     conn_tune_ok_frame:
         db 1                       ; frame type
         db 0, 0                    ; channel 0
@@ -148,19 +130,6 @@ section .data
     conn_tune_ok_payload_end:
         db 0xCE                    ; frame end
 
-    ; Connection.Open Frame
-    conn_open_frame:
-        db 1                       ; frame type
-        db 0, 0                    ; channel 0
-        db 0, 0, 0, (conn_open_payload_end - conn_open_payload) ; payload size
-    conn_open_payload:
-        db 0, 10, 0, 40            ; Connection.Open (class 10, method 40)
-        db vhost_len               ; virtual host length
-        db VHOST                   ; virtual host
-        db 0, 0                    ; reserved fields
-    conn_open_payload_end:
-        db 0xCE                    ; frame end
-
     ; Channel.Open Frame
     channel_open_frame:
         db 1                       ; frame type
@@ -171,6 +140,8 @@ section .data
         db 0                       ; reserved
     channel_open_payload_end:
         db 0xCE                    ; frame end
+
+
 
 
 
@@ -574,20 +545,10 @@ send_amqp_header:
 
 
 send_connection_start_ok:
-    ; Check if any runtime arguments were provided
-    cmp byte [runtime_args_provided], 0
-    je .send_static
-    
-    ; Build dynamic frame with runtime credentials
+    ; Always build dynamic frame with runtime credentials
     call build_connection_start_ok_frame
     mov rdi, frame_buffer
     mov edx, eax                ; frame size returned in eax
-    call send_frame
-    ret
-    
-.send_static:
-    mov rdi, conn_start_ok_frame
-    mov rdx, (conn_start_ok_payload_end - conn_start_ok_frame + 1)
     call send_frame
     ret
 
@@ -638,12 +599,9 @@ build_connection_start_ok_frame:
     add rdx, 2                  ; + 2 null separators
     
     ; Write auth string length as 4-byte big endian
-    mov eax, edx
-    ; Convert to big endian: store bytes in network order
-    mov [rdi], byte 0           ; bits 31-24
-    mov [rdi+1], byte 0         ; bits 23-16  
-    mov [rdi+2], byte 0         ; bits 15-8
-    mov [rdi+3], dl             ; bits 7-0 (length)
+    mov eax, edx                ; auth response length
+    mov rsi, rdi                ; destination for length
+    call write_be32_at_rsi      ; write 4-byte big endian length
     add rdi, 4
     
     ; Auth string format: \0username\0password
