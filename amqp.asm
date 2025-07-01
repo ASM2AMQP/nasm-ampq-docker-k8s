@@ -200,7 +200,6 @@ section .bss
     sockaddr       resb 128        ; Increased size to accommodate both IPv4 and IPv6
     receive_buffer resb RECEIVE_BUFFER_SIZE
     frame_buffer   resb FRAME_BUFFER_SIZE
-    input_buffer   resb INPUT_BUFFER_SIZE
     message_len    resd 1
     hex_out_buffer resb 2049
     addrinfo_result resq 1         ; Pointer to getaddrinfo result
@@ -334,20 +333,35 @@ mode_send:
     mov rdi, trace_read_stdin
     call print_trace
 
+    ; Allocate input buffer on stack for message reading
+    push rbp
+    mov rbp, rsp
+    sub rsp, INPUT_BUFFER_SIZE
+    and rsp, -16  ; align stack
+
 send_loop:
+    ; Pass input buffer address to read_stdin_message
+    mov rdi, rsp  ; input buffer address
     call read_stdin_message
     test rax, rax
-    jz cleanup_exit
+    jz .cleanup_send_exit
 
     mov rdi, trace_publish
     call print_trace
 
+    ; Pass input buffer address to publish_message  
+    mov rdi, rsp  ; input buffer address
     call publish_message
 
     mov rdi, trace_send
     call print_trace
 
     jmp send_loop
+
+.cleanup_send_exit:
+    mov rsp, rbp
+    pop rbp
+    jmp cleanup_exit
 
 mode_receive:
     call setup_connection
@@ -1136,6 +1150,9 @@ build_basic_consume_frame:
     ret
 
 publish_message:
+    ; Input: RDI = input buffer address
+    push rdi  ; save input buffer address
+    
     ; Build and send dynamic Basic.Publish method frame
     call build_basic_publish_frame
     mov rdi, frame_buffer
@@ -1145,8 +1162,11 @@ publish_message:
     ; Send content header
     call send_content_header
 
-    ; Send content body
+    ; Send content body with input buffer address
+    mov rdi, [rsp]              ; get input buffer address
     call send_content_body
+    
+    pop rdi   ; restore and discard input buffer address
     ret
 
 ; Build Basic.Publish frame with runtime exchange and routing key
@@ -1266,6 +1286,9 @@ send_content_header:
     ret
 
 send_content_body:
+    ; Input: RDI = input buffer address
+    push rdi  ; save input buffer address
+    
     ; Build AMQP body frame
     lea rdi, [frame_buffer]
     mov byte [rdi], 3               ; body frame type
@@ -1278,7 +1301,7 @@ send_content_body:
     add rsi, 3                      ; point to frame size field
     call write_be32_at_rsi          ; write frame size in big endian
     ; Copy message
-    lea rsi, [input_buffer]
+    mov rsi, [rsp]                  ; input buffer address
     add rdi, 7
     mov ecx, [message_len]
     rep movsb
@@ -1300,6 +1323,8 @@ send_content_body:
     mov edx, [message_len]
     add rdx, 8
     call send_frame
+    
+    pop rdi   ; restore and discard input buffer address
     ret
 
 send_frame:
@@ -1375,9 +1400,12 @@ receive_frame:
     ret
 
 read_stdin_message:
+    ; Input: RDI = input buffer address
+    push rdi  ; save input buffer address
+    
     mov rax, 0                      ; sys_read
     mov rdi, 0                      ; stdin
-    lea rsi, [input_buffer]
+    mov rsi, [rsp]                  ; input buffer address from stack
     mov rdx, (INPUT_BUFFER_SIZE - 1)
     syscall
 
@@ -1386,14 +1414,21 @@ read_stdin_message:
 
     ; Remove newline
     dec rax
-    mov byte [input_buffer + rax], 0
+    mov rsi, [rsp]                  ; input buffer address
+    mov byte [rsi + rax], 0
     mov [message_len], eax
 
     ; Return non-zero for success
     test eax, eax
-    jz read_stdin_message           ; skip empty lines
+    jz .skip_empty_line
+    
+    pop rdi   ; restore and discard input buffer address
     mov rax, 1
     ret
+
+.skip_empty_line:
+    pop rdi   ; restore input buffer address 
+    jmp read_stdin_message          ; skip empty lines
 
 read_done:
     xor rax, rax
