@@ -123,20 +123,6 @@ section .data
 
     ; Frame construction utilities - all frames built dynamically
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 %define RECEIVE_BUFFER_SIZE 4096
 %define FRAME_BUFFER_SIZE 512
 %define INPUT_BUFFER_SIZE 512
