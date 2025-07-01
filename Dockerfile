@@ -11,14 +11,14 @@ FROM base AS build
 # Install build dependencies here
 RUN apk add --no-cache nasm binutils musl-dev
 
-ARG USERNAME
-ARG PASSWORD
-ARG EXCHANGE
-ARG ROUTINGKEY
-ARG QUEUENAME
-ARG VHOST
-ARG HOST
-ARG PORT
+ARG USERNAME=guest
+ARG PASSWORD=guest
+ARG EXCHANGE=my_exchange
+ARG ROUTINGKEY=my.topic
+ARG QUEUENAME=my_queue
+ARG VHOST=/
+ARG HOST=localhost
+ARG PORT=5672
 
 WORKDIR /app
 
