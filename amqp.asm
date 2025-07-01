@@ -126,7 +126,7 @@ section .data
         db 0, 10, 0, 11            ; Connection.StartOk (class 10, method 11)
         db 0, 0, 0, 0              ; client properties (empty table)
         db 5, "PLAIN"              ; mechanism (length + string)
-        db 0, 0, 0, (sasl_end - sasl_start)  ; response length
+        db (sasl_end - sasl_start) ; response length (1 byte)
     sasl_start:
         db 0, USERNAME
         db 0, PASSWORD
@@ -237,6 +237,7 @@ section .bss
     runtime_queuename resb QUEUENAME_MAX
     runtime_exchange resb EXCHANGE_MAX
     runtime_routingkey resb ROUTINGKEY_MAX
+    runtime_args_provided resb 1          ; flag: 1 if any runtime args provided, 0 for all defaults
 
 section .text
     global _start
@@ -249,6 +250,9 @@ _start:
     mov rax, [rsp]
     cmp rax, 2
     jl show_usage
+    
+    ; Initialize runtime buffers with default values
+    call init_runtime_defaults
     
     ; Parse optional arguments: [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]
     ; argc stored in rax, argv pointers start at [rsp + 16]
@@ -565,8 +569,8 @@ send_amqp_header:
 
 
 send_connection_start_ok:
-    ; Check if runtime username is provided
-    cmp byte [runtime_username], 0
+    ; Check if any runtime arguments were provided
+    cmp byte [runtime_args_provided], 0
     je .send_static
     
     ; Build dynamic frame with runtime credentials
@@ -599,9 +603,9 @@ build_connection_start_ok_frame:
     add rdi, 4                  ; skip payload size for now
     
     ; Method header
-    mov word [rdi], 0x0A00      ; class 10 (Connection) - big endian
+    mov word [rdi], 0x000A      ; class 10 (Connection) - big endian
     add rdi, 2
-    mov word [rdi], 0x0B00      ; method 11 (StartOk) - big endian
+    mov word [rdi], 0x000B      ; method 11 (StartOk) - big endian
     add rdi, 2
     
     ; Client properties table (empty for simplicity)
@@ -611,10 +615,9 @@ build_connection_start_ok_frame:
     ; Mechanism (PLAIN)
     mov byte [rdi], 5           ; length
     inc rdi
-    mov rax, 'PLAIN'
-    mov [rdi], rax
+    mov dword [rdi], 'PLAI'     ; First 4 chars: P,L,A,I
     add rdi, 4
-    mov byte [rdi], 0           ; null terminator for PLAIN
+    mov byte [rdi], 'N'         ; Last char: N
     inc rdi
     
     ; Response (SASL authentication)
@@ -670,10 +673,9 @@ build_connection_start_ok_frame:
     ; Locale
     mov byte [rdi], 5           ; length
     inc rdi
-    mov rax, 'en_US'
-    mov [rdi], rax
+    mov dword [rdi], 'en_U'     ; First 4 chars
     add rdi, 4
-    mov byte [rdi], 0
+    mov byte [rdi], 'S'         ; Last char
     inc rdi
     
     ; Frame end
@@ -731,9 +733,9 @@ build_connection_open_frame:
     add rdi, 4
     
     ; Method header
-    mov word [rdi], 0x0A00      ; class 10 (Connection) - big endian
+    mov word [rdi], 0x000A      ; class 10 (Connection) - big endian
     add rdi, 2
-    mov word [rdi], 0x2800      ; method 40 (Open) - big endian  
+    mov word [rdi], 0x0028      ; method 40 (Open) - big endian
     add rdi, 2
     
     ; Virtual host - use runtime or default
@@ -805,14 +807,14 @@ build_exchange_declare_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0100      ; channel 1 - big endian
+    mov word [rdi], 0x0001      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x2800      ; class 40 (Exchange) - big endian
+    mov word [rdi], 0x0028      ; class 40 (Exchange) - big endian
     add rdi, 2
-    mov word [rdi], 0x0A00      ; method 10 (Declare) - big endian
+    mov word [rdi], 0x000A      ; method 10 (Declare) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -893,14 +895,14 @@ build_queue_declare_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0100      ; channel 1 - big endian
+    mov word [rdi], 0x0001      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header  
-    mov word [rdi], 0x3200      ; class 50 (Queue) - big endian
+    mov word [rdi], 0x0032      ; class 50 (Queue) - big endian
     add rdi, 2
-    mov word [rdi], 0x0A00      ; method 10 (Declare) - big endian
+    mov word [rdi], 0x000A      ; method 10 (Declare) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -975,14 +977,14 @@ build_queue_bind_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0100      ; channel 1 - big endian
+    mov word [rdi], 0x0001      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x3200      ; class 50 (Queue) - big endian
+    mov word [rdi], 0x0032      ; class 50 (Queue) - big endian
     add rdi, 2
-    mov word [rdi], 0x1400      ; method 20 (Bind) - big endian
+    mov word [rdi], 0x0014      ; method 20 (Bind) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1091,14 +1093,14 @@ build_basic_consume_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0100      ; channel 1 - big endian
+    mov word [rdi], 0x0001      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x3C00      ; class 60 (Basic) - big endian
+    mov word [rdi], 0x003C      ; class 60 (Basic) - big endian
     add rdi, 2
-    mov word [rdi], 0x1400      ; method 20 (Consume) - big endian
+    mov word [rdi], 0x0014      ; method 20 (Consume) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1181,14 +1183,14 @@ build_basic_publish_frame:
     ; Frame header
     mov byte [rdi], 1           ; frame type
     inc rdi
-    mov word [rdi], 0x0100      ; channel 1 - big endian
+    mov word [rdi], 0x0001      ; channel 1 - big endian
     add rdi, 2
     add rdi, 4                  ; skip payload size
     
     ; Method header
-    mov word [rdi], 0x3C00      ; class 60 (Basic) - big endian
+    mov word [rdi], 0x003C      ; class 60 (Basic) - big endian
     add rdi, 2
-    mov word [rdi], 0x2800      ; method 40 (Publish) - big endian
+    mov word [rdi], 0x0028      ; method 40 (Publish) - big endian
     add rdi, 2
     
     ; Reserved short
@@ -1290,7 +1292,7 @@ send_content_body:
     ; Build AMQP body frame
     lea rdi, [frame_buffer]
     mov byte [rdi], 3               ; body frame type
-    mov word [rdi + 1], 0x0100      ; channel 1 (big endian)
+    mov word [rdi + 1], 0x0001      ; channel 1 (big endian)
     ; Frame size (big endian)
     mov eax, [message_len]
     cmp eax, FRAME_BUFFER_SIZE - 8
@@ -1338,11 +1340,11 @@ wait_loop:
     jne wait_loop
 
     mov ax, [receive_buffer + 7]
-    cmp ax, 0x3C00                  ; Basic class (big endian)
+    cmp ax, 0x003C                  ; Basic class (big endian)
     jne wait_loop
 
     mov ax, [receive_buffer + 9]
-    cmp ax, 0x3C00                  ; Deliver method (big endian)
+    cmp ax, 0x003C                  ; Deliver method (big endian)
     jne wait_loop
 
     ; Receive content header and body
@@ -1590,6 +1592,114 @@ str_len:
     pop rax
     ret
 
+; Initialize runtime configuration buffers with compile-time defaults
+init_runtime_defaults:
+    push rsi
+    push rdi
+    push rcx
+    push rax
+    
+    ; Initialize flag to indicate no runtime args provided yet
+    mov byte [runtime_args_provided], 0
+    
+    ; Initialize username with default
+    mov rsi, username
+    mov rdi, runtime_username
+    mov rcx, username_len
+    call copy_string_with_len
+    
+    ; Initialize password with default
+    mov rsi, password
+    mov rdi, runtime_password
+    mov rcx, password_len
+    call copy_string_with_len
+    
+    ; Initialize host with default (copy until null terminator)
+    mov rsi, host_str
+    mov rdi, runtime_host
+    mov rcx, HOSTNAME_MAX - 1
+    call copy_string_until_null
+    
+    ; Initialize vhost with default
+    mov rsi, vhost
+    mov rdi, runtime_vhost
+    mov rcx, vhost_len
+    call copy_string_with_len
+    
+    ; Initialize queue name with default
+    mov rsi, queue_name
+    mov rdi, runtime_queuename
+    mov rcx, queue_name_len
+    call copy_string_with_len
+    
+    ; Initialize exchange with default
+    mov rsi, exchange
+    mov rdi, runtime_exchange
+    mov rcx, exchange_len
+    call copy_string_with_len
+    
+    ; Initialize routing key with default
+    mov rsi, routing_key
+    mov rdi, runtime_routingkey
+    mov rcx, routing_key_len
+    call copy_string_with_len
+    
+    pop rax
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
+; Copy string with known length
+; Input: rsi = source, rdi = dest, rcx = length
+copy_string_with_len:
+    push rsi
+    push rdi
+    push rcx
+    
+.copy_loop:
+    test rcx, rcx
+    jz .done
+    mov al, [rsi]
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .copy_loop
+    
+.done:
+    mov byte [rdi], 0       ; null terminate
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
+; Copy string until null terminator (with max length)
+; Input: rsi = source, rdi = dest, rcx = max length
+copy_string_until_null:
+    push rsi
+    push rdi
+    push rcx
+    
+.copy_loop:
+    test rcx, rcx
+    jz .done
+    mov al, [rsi]
+    test al, al
+    jz .done
+    mov [rdi], al
+    inc rsi
+    inc rdi
+    dec rcx
+    jmp .copy_loop
+    
+.done:
+    mov byte [rdi], 0       ; null terminate
+    pop rcx
+    pop rdi
+    pop rsi
+    ret
+
 ; Copy command line argument to buffer if present and non-empty
 ; Input: rsi = source string pointer, rdi = destination buffer, rcx = buffer size
 ; Modifies: rax, rdx
@@ -1603,6 +1713,9 @@ copy_argument:
     jz .done
     cmp byte [rsi], 0
     je .done
+    
+    ; Mark that runtime arguments were provided
+    mov byte [runtime_args_provided], 1
     
     ; Copy argument to buffer
     dec rcx                     ; leave space for null terminator
