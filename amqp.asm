@@ -121,31 +121,7 @@ section .data
     ; AMQP Protocol header
     amqp_header    db "AMQP", 0, 0, 9, 1
 
-    ; Prebuilt AMQP frames with correct byte order
-
-    ; Connection.TuneOk Frame  
-    conn_tune_ok_frame:
-        db 1                       ; frame type
-        db 0, 0                    ; channel 0
-        db 0, 0, 0, (conn_tune_ok_payload_end - conn_tune_ok_payload) ; payload size
-    conn_tune_ok_payload:
-        db 0, 10, 0, 31            ; Connection.TuneOk (class 10, method 31)
-        db 0, 1                    ; channel max (0 = no limit)
-        db 0, 2, 0, 0              ; frame max 131072
-        db 0, 0                    ; heartbeat 0 (disabled)
-    conn_tune_ok_payload_end:
-        db 0xCE                    ; frame end
-
-    ; Channel.Open Frame
-    channel_open_frame:
-        db 1                       ; frame type
-        db 0, 1                    ; channel 1
-        db 0, 0, 0, (channel_open_payload_end - channel_open_payload) ; payload size
-    channel_open_payload:
-        db 0, 20, 0, 10            ; Channel.Open (class 20, method 10)
-        db 0                       ; reserved
-    channel_open_payload_end:
-        db 0xCE                    ; frame end
+    ; Frame construction utilities - all frames built dynamically on stack
 
 
 
@@ -157,24 +133,6 @@ section .data
 
 
 
-
-
-    ; Content Header Frame template in data segment
-    content_header_frame:
-        db 2                       ; frame type header (2)
-        db 0, 1                    ; channel = 1
-        db 0, 0, 0, (content_header_payload_end - content_header_payload) ; payload size
-    content_header_payload:
-        db 0, 60                   ; class id = 60 (Basic) - BIG ENDIAN
-        db 0, 0                    ; weight = 0 - BIG ENDIAN
-    content_header_body_size_pos:
-        dq 0                       ; placeholder for body size (uint64 BE)
-        db 0, 0                    ; property flags = 0 (no properties) - BIG ENDIAN
-    content_header_payload_end:
-        db 0xCE                    ; frame end
-
-    ; Offsets relative to frame start:
-    body_size_offset      equ content_header_body_size_pos - content_header_frame
 
     ;; ; Content Body Frame template in data segment
     ;; content_body_frame:
@@ -202,22 +160,154 @@ section .bss
     frame_buffer   resb FRAME_BUFFER_SIZE
     message_len    resd 1
     hex_out_buffer resb 2049
-    ; Runtime configuration overrides
-    runtime_username resb USERNAME_MAX
-    runtime_password resb PASSWORD_MAX
-    runtime_host     resb HOSTNAME_MAX
-    runtime_port     resb 8           ; port as string
-    runtime_vhost    resb VHOST_MAX
-    runtime_queuename resb QUEUENAME_MAX
-    runtime_exchange resb EXCHANGE_MAX
-    runtime_routingkey resb ROUTINGKEY_MAX
-    runtime_args_provided resb 1          ; flag: 1 if any runtime args provided, 0 for all defaults
 
 section .text
     global _start
     extern getaddrinfo
     extern freeaddrinfo
 
+; Frame construction utilities
+
+; Build Connection.TuneOk frame on stack
+; Input: RDI = destination buffer
+; Output: RAX = frame size
+build_connection_tune_ok_frame:
+    push rsi
+    push rcx
+    push rdx
+    
+    mov rsi, rdi                ; Save destination
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 0           ; channel 0 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x0A000000 ; payload size 10 (big endian)
+    add rdi, 4
+    
+    ; Payload
+    mov dword [rdi], 0x1F000A00 ; Connection.TuneOk (class 10, method 31) big endian
+    add rdi, 4
+    mov word [rdi], 0x0100      ; channel max 1 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x00000200 ; frame max 131072 (big endian)
+    add rdi, 4
+    mov word [rdi], 0           ; heartbeat 0
+    add rdi, 2
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate size
+    mov rax, rdi
+    sub rax, rsi
+    
+    pop rdx
+    pop rcx
+    pop rsi
+    ret
+
+; Build Channel.Open frame on stack
+; Input: RDI = destination buffer
+; Output: RAX = frame size
+build_channel_open_frame:
+    push rsi
+    push rcx
+    push rdx
+    
+    mov rsi, rdi                ; Save destination
+    
+    ; Frame header
+    mov byte [rdi], 1           ; frame type
+    inc rdi
+    mov word [rdi], 0x0100      ; channel 1 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x05000000 ; payload size 5 (big endian)
+    add rdi, 4
+    
+    ; Payload
+    mov dword [rdi], 0x0A001400 ; Channel.Open (class 20, method 10) big endian
+    add rdi, 4
+    mov byte [rdi], 0           ; reserved
+    inc rdi
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate size
+    mov rax, rdi
+    sub rax, rsi
+    
+    pop rdx
+    pop rcx
+    pop rsi
+    ret
+
+; Build Content Header frame on stack  
+; Input: RDI = destination buffer, RSI = message length
+; Output: RAX = frame size
+build_content_header_frame:
+    push rsi
+    push rcx
+    push rdx
+    push r8
+    
+    mov r8, rdi                 ; Save destination
+    mov rdx, rsi                ; Save message length
+    
+    ; Frame header
+    mov byte [rdi], 2           ; frame type header
+    inc rdi
+    mov word [rdi], 0x0100      ; channel 1 (big endian)
+    add rdi, 2
+    mov dword [rdi], 0x0E000000 ; payload size 14 (big endian)
+    add rdi, 4
+    
+    ; Payload
+    mov word [rdi], 0x3C00      ; class id 60 (Basic) big endian
+    add rdi, 2
+    mov word [rdi], 0           ; weight 0
+    add rdi, 2
+    
+    ; Body size (8 bytes big endian)
+    mov dword [rdi], 0          ; upper 4 bytes = 0
+    add rdi, 4
+    mov eax, edx                ; message length
+    call write_be32_at_rdi      ; lower 4 bytes in big endian
+    add rdi, 4
+    
+    ; Property flags
+    mov word [rdi], 0           ; no properties
+    add rdi, 2
+    
+    ; Frame end
+    mov byte [rdi], 0xCE
+    inc rdi
+    
+    ; Calculate size
+    mov rax, rdi
+    sub rax, r8
+    
+    pop r8
+    pop rdx
+    pop rcx
+    pop rsi
+    ret
+
+; Helper function: Write 32-bit value in big endian at RDI
+; Input: EAX = value, RDI = destination
+write_be32_at_rdi:
+    mov byte [rdi + 3], al
+    shr eax, 8
+    mov byte [rdi + 2], al
+    shr eax, 8
+    mov byte [rdi + 1], al
+    shr eax, 8
+    mov byte [rdi], al
+    ret
 
 _start:
     ; Check arguments - at least mode required
@@ -709,9 +799,14 @@ build_connection_start_ok_frame:
     ret
 
 send_connection_tune_ok:
-    mov rdi, conn_tune_ok_frame
-    mov rdx, (conn_tune_ok_payload_end - conn_tune_ok_frame + 1)
+    ; Allocate frame on stack
+    sub rsp, 32                 ; Allocate space for frame
+    mov rdi, rsp                ; Use stack space as buffer
+    call build_connection_tune_ok_frame
+    mov rdx, rax                ; Frame size
+    mov rdi, rsp                ; Frame buffer
     call send_frame
+    add rsp, 32                 ; Restore stack
     ret
 
 send_connection_open:
@@ -788,9 +883,14 @@ build_connection_open_frame:
     ret
 
 open_channel:
-    mov rdi, channel_open_frame
-    mov rdx, (channel_open_payload_end - channel_open_frame + 1)
+    ; Allocate frame on stack
+    sub rsp, 32                 ; Allocate space for frame
+    mov rdi, rsp                ; Use stack space as buffer
+    call build_channel_open_frame
+    mov rdx, rax                ; Frame size
+    mov rdi, rsp                ; Frame buffer
     call send_frame
+    add rsp, 32                 ; Restore stack
     call receive_frame
     ret
 
@@ -1265,35 +1365,25 @@ build_basic_publish_frame:
     ret
 
 send_content_header:
-    ; Build AMQP header frame
-    ; Copy template to frame buffer
-    lea rdi, [frame_buffer]
-    mov rsi, content_header_frame
-    mov rcx, (content_header_payload_end - content_header_frame + 1)
-    cmp rcx, FRAME_BUFFER_SIZE
-    ja frame_buffer_overflow
-    rep movsb
-
-    ; Set body size (big endian conversion)
-    mov eax, [message_len]       ; load 32-bit length  
-    mov dword [frame_buffer + body_size_offset], 0      ; upper 4 bytes = 0
-    ; Write lower 4 bytes in big endian
-    mov rsi, frame_buffer + body_size_offset + 4
-    call write_be32_at_rsi       ; lower 4 bytes in big endian
-
-    ; Output frame as hex to stderr
-    lea rdi, [frame_buffer]         ; frame start
-    mov rdx, (content_header_payload_end - content_header_frame + 1)
-    call dump_frame_hex_spaced      ; use spaced version for readability
-    mov rdi, hex_out_buffer         ; print hex output
+    ; Allocate frame on stack
+    sub rsp, 32                 ; Allocate space for frame
+    mov rdi, rsp                ; Use stack space as buffer
+    mov esi, [message_len]      ; Message length
+    call build_content_header_frame
+    mov rdx, rax                ; Frame size
+    
+    ; Output frame as hex to stderr for debugging
+    mov rdi, rsp                ; Frame start
+    call dump_frame_hex_spaced  ; Use spaced version for readability
+    mov rdi, hex_out_buffer     ; Print hex output
     call print_trace
-    mov rdi, newline                ; add newline
+    mov rdi, newline            ; Add newline
     call print_trace
-
+    
     ; Send frame
-    lea rdi, [frame_buffer]
-    mov rdx, (content_header_payload_end - content_header_frame + 1)
+    mov rdi, rsp                ; Frame buffer
     call send_frame
+    add rsp, 32                 ; Restore stack
     ret
 
 send_content_body:
