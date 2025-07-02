@@ -60,21 +60,21 @@ addrinfo_hints_size equ 40
 
 section .data
     ; String values
-    username       db USERNAME
-    password       db PASSWORD
-    vhost          db VHOST
-    exchange       db EXCHANGE
-    routing_key    db ROUTINGKEY
-    queue_name     db QUEUENAME
+    username       db USERNAME, 0
+    password       db PASSWORD, 0
+    vhost          db VHOST, 0
+    exchange       db EXCHANGE, 0
+    routing_key    db ROUTINGKEY, 0
+    queue_name     db QUEUENAME, 0
     host_str       db HOST, 0
 
-    ; Precomputed lengths
-    username_len       equ password - username
-    password_len       equ vhost - password
-    vhost_len          equ exchange - vhost
-    exchange_len       equ routing_key - exchange
-    routing_key_len    equ queue_name - routing_key
-    queue_name_len     equ host_str - queue_name
+    ; Precomputed lengths (excluding null terminators)
+    username_len       equ 5          ; "guest"
+    password_len       equ 5          ; "guest" 
+    vhost_len          equ 1          ; "/"
+    exchange_len       equ 11         ; "my_exchange"
+    routing_key_len    equ 8          ; "my.topic"
+    queue_name_len     equ 8          ; "my_queue"
 
     ; Network port (big endian)
     port_be        dw ((PORT & 0xFF) << 8) | ((PORT >> 8) & 0xFF)
@@ -347,8 +347,14 @@ _start:
     cmp rax, 2
     jl show_usage
     
+    ; Preserve argc across function call
+    push rax
+    
     ; Initialize configuration pointers with default values
     call init_config_pointers
+    
+    ; Restore argc
+    pop rax
     
     ; Parse optional arguments: [user] [host] [port] [vhost] [queuename] [exchange] [routingkey]
     ; argc stored in rax, argv pointers start at [rsp + 16]
