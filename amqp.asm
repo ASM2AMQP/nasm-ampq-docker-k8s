@@ -50,13 +50,14 @@ struc hints_t
     .ai_socktype resd 1      ; int, 4 bytes
     .ai_protocol resd 1      ; int, 4 bytes
     .ai_addrlen  resd 1      ; socklen_t, 4 bytes  
+    .padding     resd 1      ; 4 bytes padding for alignment
     .ai_addr     resq 1      ; pointer, 8 bytes
     .ai_canonname resq 1     ; pointer, 8 bytes
     .ai_next     resq 1      ; pointer, 8 bytes
 endstruc
 
 ; Size of the hints structure (must match actual struct size)
-addrinfo_hints_size equ 40
+addrinfo_hints_size equ 48
 
 section .data
     ; String values
@@ -644,6 +645,10 @@ resolve_and_connect:
     sub rsp, addrinfo_hints_size + 8    ; +8 for addrinfo result pointer
     
     ; Initialize hints structure on stack (zero the whole structure first)
+    ; Store base pointer in callee-saved register r12
+    push r12
+    mov r12, rsp        ; r12 now points to our hints structure
+    
     push rdi
     mov rdi, rsp
     add rdi, 8          ; account for saved rdi
@@ -652,11 +657,11 @@ resolve_and_connect:
     rep stosb
     pop rdi
     
-    ; Set the fields we need
-    mov dword [rsp + hints_t.ai_flags], 0          ; ai_flags = 0
-    mov dword [rsp + hints_t.ai_family], AF_UNSPEC ; ai_family = AF_UNSPEC (IPv4 or IPv6)
-    mov dword [rsp + hints_t.ai_socktype], SOCK_STREAM ; ai_socktype = SOCK_STREAM (TCP)
-    mov dword [rsp + hints_t.ai_protocol], 0       ; ai_protocol = 0 (any)
+    ; Set the fields we need (use saved stack pointer r12)
+    mov dword [r12 + hints_t.ai_flags], 0          ; ai_flags = 0
+    mov dword [r12 + hints_t.ai_family], AF_UNSPEC ; ai_family = AF_UNSPEC (IPv4 or IPv6)
+    mov dword [r12 + hints_t.ai_socktype], SOCK_STREAM ; ai_socktype = SOCK_STREAM (TCP)
+    mov dword [r12 + hints_t.ai_protocol], 0       ; ai_protocol = 0 (any)
 
     ; Use configured hostname and port pointers
     mov rdi, [config_host_ptr]      ; hostname from config pointer
@@ -666,15 +671,15 @@ resolve_and_connect:
     ; Call getaddrinfo(hostname, port_string, hints, &result)
     ; rdi = hostname (already set)
     ; rsi = port string (already set) 
-    mov rdx, rsp            ; pointer to stack-allocated hints structure
-    lea rcx, [rsp + addrinfo_hints_size]  ; pointer to addrinfo result pointer on stack
+    mov rdx, r12            ; pointer to stack-allocated hints structure
+    lea rcx, [r12 + addrinfo_hints_size]  ; pointer to addrinfo result pointer on stack
     call getaddrinfo
 
     test rax, rax
     jnz .cleanup_and_fail   ; getaddrinfo returns 0 on success
 
     ; Try each address until one connects
-    mov rsi, [rsp + addrinfo_hints_size]  ; Load addrinfo result pointer from stack
+    mov rsi, [r12 + addrinfo_hints_size]  ; Load addrinfo result pointer from stack
 
 .try_address:
     test rsi, rsi
@@ -722,28 +727,31 @@ resolve_and_connect:
 
 .connection_success:
     ; Free the addrinfo result and clean up stack
-    ; addrinfo result pointer is at [rsp + addrinfo_hints_size]
-    mov rdi, [rsp + addrinfo_hints_size]
+    ; addrinfo result pointer is at [r12 + addrinfo_hints_size]
+    mov rdi, [r12 + addrinfo_hints_size]
     call freeaddrinfo
     
-    ; Restore original stack pointer and return
+    ; Restore saved register and original stack pointer and return
+    pop r12
     mov rsp, rbp
     pop rbp
     ret
 
 .cleanup_and_fail:
     ; Clean up stack and jump to failure handler
+    pop r12
     mov rsp, rbp
     pop rbp
     jmp dns_fail_handler
 
 .cleanup_and_connect_fail:
     ; Free addrinfo and jump to connect failure handler
-    ; addrinfo result pointer is at [rsp + addrinfo_hints_size]
-    mov rdi, [rsp + addrinfo_hints_size]
+    ; addrinfo result pointer is at [r12 + addrinfo_hints_size]
+    mov rdi, [r12 + addrinfo_hints_size]
     call freeaddrinfo
     
-    ; Restore original stack pointer and jump to failure handler
+    ; Restore saved register and original stack pointer and jump to failure handler
+    pop r12
     mov rsp, rbp
     pop rbp
     jmp connect_fail_handler
