@@ -216,7 +216,7 @@ build_connection_tune_ok_frame:
     inc rdi
     mov word [rdi], 0           ; channel 0 (big endian)
     add rdi, 2
-    mov dword [rdi], 0x0A000000 ; payload size 10 (big endian)
+    mov dword [rdi], 0x0C000000 ; payload size 12 (big endian)
     add rdi, 4
     
     ; Payload
@@ -224,7 +224,7 @@ build_connection_tune_ok_frame:
     add rdi, 4
     mov word [rdi], 0x0100      ; channel max 1 (big endian)
     add rdi, 2
-    mov dword [rdi], 0x00000200 ; frame max 131072 (big endian)
+    mov dword [rdi], 0x00020000 ; frame max 131072 (big endian)
     add rdi, 4
     mov word [rdi], 0           ; heartbeat 0
     add rdi, 2
