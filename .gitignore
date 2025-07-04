@@ -7,3 +7,6 @@ amqp
 *.lock
 *.tar
 *.log
+# Prevent binary files from being committed
+amqp_test
+amqp_backup.asm
