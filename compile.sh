@@ -1,3 +1,22 @@
 #!/bin/bash
-nasm -DUSERNAME='"guest"' -DPASSWORD='"guest"' -DEXCHANGE='"my_exchange"' -DROUTINGKEY='"my.topic"' -DQUEUENAME='"my_queue"' -DVHOST='"/"' -DHOST='"localhost"' -DPORT=5672 -f elf64 -o amqp.o amqp.asm
-ld -dynamic-linker /lib64/ld-linux-x86-64.so.2 -lc amqp.o -o amqp
+
+USERNAME=guest
+PASSWORD=guest
+EXCHANGE=datetime_exchange
+ROUTINGKEY=datetime.last
+QUEUENAME=datetime_queue
+VHOST=/
+HOST=localhost
+PORT=5672
+
+nasm \
+   -DUSERNAME='"${USERNAME}"' \
+   -DPASSWORD='"${PASSWORD}"' \
+   -DEXCHANGE='"${EXCHANGE}"' \
+   -DROUTINGKEY='"${ROUTINGKEY}"' \
+   -DQUEUENAME='"${QUEUENAME}"' \
+   -DVHOST='"${VHOST}"' \
+   -DHOST='"${HOST}"' \
+   -DPORT='${PORT}' \
+   -f elf64 -o amqp.o amqp.asm && \
+ld -dynamic-linker /lib/ld-musl-x86_64.so.1 -lc amqp.o -o amqp
