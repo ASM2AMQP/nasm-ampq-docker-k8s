@@ -17,6 +17,6 @@ nasm \
    -DQUEUENAME='"'"${QUEUENAME}"'"' \
    -DVHOST='"'"${VHOST}"'"' \
    -DHOST='"'"${HOST}"'"' \
-   -DPORT='${PORT}' \
+   -DPORT="${PORT}" \
    -f elf64 -o amqp.o amqp.asm && \
 ld -dynamic-linker /lib/ld-musl-x86_64.so.1 -lc amqp.o -o amqp
